@@ -1,4 +1,4 @@
-use bevy::input::mouse::AccumulatedMouseMotion;
+use bevy::input::mouse::{AccumulatedMouseMotion, MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
 use std::{
@@ -13,10 +13,12 @@ fn main() {
         .add_plugins(DefaultPlugins)
         .add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
         .add_plugins(RapierDebugRenderPlugin::default())
-        // Calculates collisions at 240hz
-        .insert_resource(Time::<Fixed>::from_seconds(1.0 / 2400.0))
+        // Calculates collisions at 60hz
+        .insert_resource(Time::<Fixed>::from_seconds(1.0 / 60.0))
         .add_systems(Startup, setup_graphics)
         .add_systems(Startup, setup_physics)
+        // .add_systems(Update, print_debug)
+        .add_systems(Update, take_out)
         .add_systems(Update, orbit)
         .add_systems(Update, reset_simulation)
         .add_systems(Update, move_robot)
@@ -39,14 +41,15 @@ const WALL_HEIGHT: f32 = 1.0 * FTM;
 
 const WALL_LENGTH: f32 = 12.0 * FTM;
 
-const ROBOT_LENGTH: f32 = 1.5 * FTM;
+const ROBOT_LENGTH: f32 = (13.858 / 12.0) * FTM;
+
+const ROBOT_HEIGHT: f32 = (6.0 / 12.0) * FTM;
+
+const ROBOT_WEIGHT: f32 = 20.0 * POUNDS_TO_KILOGRAMS;
 
 const BALL_RAD: f32 = ((5.0 / 12.0) / 2.0) * FTM;
 
-const BALL_DENSITY: f32 = (0.165 * POUNDS_TO_KILOGRAMS)
-    / ((4.0 / 3.0) * PI * (((2.5 / 12.0) * FTM) * ((2.5 / 12.0) * FTM) * ((2.5 / 12.0) * FTM)));
-
-const ROBOT_DENSITY: f32 = (50.0 * POUNDS_TO_KILOGRAMS) / (1.0 * FTM) * (1.0 * FTM) * (1.0 * FTM);
+const BALL_WEIGHT: f32 = 0.165 * POUNDS_TO_KILOGRAMS;
 
 const GOAL_HEIGHT: f32 = 0.9845;
 
@@ -55,7 +58,6 @@ fn spawn_scene_objects(
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
 ) {
-    println!("{}", ROBOT_DENSITY);
     // Arena
     commands.spawn((
         Collider::cuboid(WALL_LENGTH / 2.0, 0.001, WALL_LENGTH / 2.0),
@@ -145,51 +147,161 @@ fn spawn_scene_objects(
     ));
 
     // Robot
-    commands.spawn((
-        Velocity::default(),
-        ExternalImpulse::default(),
-        Ccd::enabled(),
-        LockedAxes::ROTATION_LOCKED_X | LockedAxes::ROTATION_LOCKED_Z,
-        RigidBody::Dynamic,
-        Collider::cuboid(ROBOT_LENGTH / 2.0, 0.1, ROBOT_LENGTH / 2.0),
-        Transform::from_xyz(0.0, 0.101, 0.0),
-        PhysicsObject,
-        ColliderMassProperties::Density(ROBOT_DENSITY),
-        ReadMassProperties::default(),
-        Friction::coefficient(0.0),
-        Damping {
-            linear_damping: 0.0,
-            angular_damping: 0.0,
-        },
-        RobotObject {
-            linear_speed: 1.50,
-            turn_speed: 5.9,
-            max_impulse: 0.5,
-        },
-        Mesh3d(meshes.add(Cuboid::new(ROBOT_LENGTH, 0.2, ROBOT_LENGTH))),
-        MeshMaterial3d(materials.add(GREEN)),
-    ));
+    commands
+        .spawn((
+            Velocity::default(),
+            ExternalImpulse::default(),
+            Ccd::enabled(),
+            LockedAxes::ROTATION_LOCKED_X | LockedAxes::ROTATION_LOCKED_Z,
+            RigidBody::Dynamic,
+            Collider::cuboid(ROBOT_LENGTH / 2.0, ROBOT_HEIGHT / 2.0, ROBOT_LENGTH / 2.0),
+            Transform::from_xyz(0.0, 0.101, 0.0),
+            ColliderMassProperties::Mass(ROBOT_WEIGHT),
+            ReadMassProperties::default(),
+            Friction::coefficient(0.0),
+            Damping {
+                linear_damping: 0.0,
+                angular_damping: 0.0,
+            },
+            RobotObject {
+                linear_speed: 1.50,
+                turn_speed: 5.9,
+                max_impulse: 0.25, // "Torque"
+                snozzle_angle: 0.0,
+                snozzle_pow: 6.0, // m/s,
+            },
+            Mesh3d(meshes.add(Cuboid::new(ROBOT_LENGTH, ROBOT_HEIGHT, ROBOT_LENGTH))),
+            MeshMaterial3d(materials.add(GREEN)),
+        ))
+        .insert((PhysicsObject, DebugObject));
 
     // Ball
     commands
         .spawn(RigidBody::Dynamic)
+        .insert(Velocity::default())
         .insert(Collider::ball(BALL_RAD))
         .insert(Ccd::enabled())
         .insert(Restitution::coefficient(0.5))
-        .insert(ColliderMassProperties::Density(BALL_DENSITY))
+        .insert(ColliderMassProperties::Mass(BALL_WEIGHT))
+        .insert(ReadMassProperties::default())
         .insert(Damping {
             linear_damping: 0.1,
             angular_damping: 1.0,
         })
         .insert(Transform::from_xyz(0.0, 1.0, 0.0))
         .insert(PhysicsObject)
+        .insert(DebugObject)
         .insert(Mesh3d(meshes.add(Sphere::new(BALL_RAD))))
         .insert(MeshMaterial3d(materials.add(WHITE)));
+}
+
+fn print_debug(
+    query: Query<(Option<&RobotObject>, &ReadMassProperties, &Velocity), With<DebugObject>>,
+) {
+    for (robot_comp, mass_props, velocity) in &query {
+        let name = if robot_comp.is_some() {
+            "Robot"
+        } else {
+            "Ball"
+        };
+
+        println!(
+            "{} Stats: Mass: {:.2} kg | velocity: {:.2}",
+            name, mass_props.mass, velocity.linvel
+        );
+    }
 }
 
 const WHITE: bevy::prelude::Color = Color::srgb(2.8, 2.8, 2.8);
 
 const GREEN: bevy::prelude::Color = Color::srgb(0.0, 2.0, 0.0);
+
+// Bevy only supports 15 for tuples, not structs
+#[derive(Bundle)]
+struct BallBundle {
+    rigid_body: RigidBody,
+    velocity: Velocity,
+    collider: Collider,
+    ccd: Ccd,
+    restitution: Restitution,
+    mass_props: ColliderMassProperties,
+    read_mass: ReadMassProperties,
+    damping: Damping,
+    physics_object: PhysicsObject,
+    debug_object: DebugObject,
+    transform: Transform,
+}
+
+impl BallBundle {
+    fn new(position: Vec3, linear_velocity: Vec3) -> Self {
+        Self {
+            rigid_body: RigidBody::Dynamic,
+            velocity: Velocity {
+                linvel: linear_velocity,
+                angvel: Vec3::new(0.2, 0.4, 0.8),
+            },
+            collider: Collider::ball(BALL_RAD),
+            ccd: Ccd::enabled(),
+            restitution: Restitution::coefficient(0.5),
+            mass_props: ColliderMassProperties::Mass(BALL_WEIGHT),
+            read_mass: ReadMassProperties::default(),
+            damping: Damping {
+                linear_damping: 0.1,
+                angular_damping: 1.0,
+            },
+            physics_object: PhysicsObject,
+            debug_object: DebugObject,
+            transform: Transform::from_translation(position),
+        }
+    }
+}
+
+fn take_out(
+    mut commands: Commands,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut query: Query<(&Transform, &mut RobotObject)>,
+) {
+    for (transform, mut robot) in &mut query {
+        // let rotation = transform.rotation.w.acos();
+        let rotation: f32 = transform.rotation.to_euler(EulerRot::YXZ).0;
+
+        let snozzle_angle: f32 = robot.snozzle_angle;
+
+        let rotation_1 = rotation.cos();
+
+        let rotation_2 = rotation.sin();
+
+        let increment: f32 = 0.1;
+
+        if keys.just_pressed(KeyCode::ArrowUp) && robot.snozzle_angle <= 90.0 - increment {
+            robot.snozzle_angle += increment;
+        } else if !(robot.snozzle_angle <= 90.0 - increment) {
+            println!("nono: {:.2}", robot.snozzle_angle);
+        }
+
+        if keys.just_pressed(KeyCode::ArrowDown) && robot.snozzle_angle >= increment {
+            robot.snozzle_angle -= increment;
+        } else if !(robot.snozzle_angle >= increment) {
+            println!("nonononono: {:.2}", robot.snozzle_angle);
+        }
+
+        println!("yesyes: {:.2}", robot.snozzle_angle);
+
+        let shoot_velocity = Vec3::new(rotation_2, snozzle_angle, rotation_1) * robot.snozzle_pow;
+
+        // Vec3::Y * _ ~= (0.0, 1.0, 0.0) * _
+        let spawn_pos = transform.translation + Vec3::Y * ROBOT_HEIGHT;
+
+        if keys.just_pressed(KeyCode::KeyS) {
+            println!("transform: {:.2}", rotation);
+            commands.spawn(BallBundle::new(spawn_pos, shoot_velocity));
+        }
+        if keys.pressed(KeyCode::KeyA) {
+            println!("transform: {:.2}", rotation);
+            commands.spawn(BallBundle::new(spawn_pos, shoot_velocity));
+        }
+    }
+}
 
 fn move_robot(
     keys: Res<ButtonInput<KeyCode>>,
@@ -265,10 +377,15 @@ fn reset_simulation(
 struct PhysicsObject;
 
 #[derive(Component)]
+struct DebugObject;
+
+#[derive(Component)]
 struct RobotObject {
     linear_speed: f32,
     turn_speed: f32,
     max_impulse: f32,
+    snozzle_angle: f32,
+    snozzle_pow: f32,
 }
 
 #[derive(Debug, Resource)]
