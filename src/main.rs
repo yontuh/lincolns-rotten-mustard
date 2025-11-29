@@ -1,6 +1,7 @@
-use bevy::input::mouse::{AccumulatedMouseMotion, MouseScrollUnit, MouseWheel};
+use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
+use iyes_perf_ui::prelude::*;
 use std::{
     f32::consts::{FRAC_PI_2, PI},
     ops::Range,
@@ -11,6 +12,11 @@ fn main() {
         .init_resource::<CameraSettings>()
         .init_resource::<CameraState>()
         .add_plugins(DefaultPlugins)
+        .add_plugins(bevy::diagnostic::FrameTimeDiagnosticsPlugin::default())
+        .add_plugins(bevy::diagnostic::EntityCountDiagnosticsPlugin)
+        .add_plugins(bevy::diagnostic::SystemInformationDiagnosticsPlugin)
+        .add_plugins(bevy::render::diagnostic::RenderDiagnosticsPlugin)
+        .add_plugins(PerfUiPlugin)
         .add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
         .add_plugins(RapierDebugRenderPlugin::default())
         // Calculates collisions at 60hz
@@ -19,9 +25,9 @@ fn main() {
         .add_systems(Startup, setup_physics)
         // .add_systems(Update, print_debug)
         .add_systems(Update, take_out)
-        .add_systems(Update, orbit)
+        .add_systems(FixedUpdate, orbit)
         .add_systems(Update, reset_simulation)
-        .add_systems(Update, move_robot)
+        .add_systems(FixedUpdate, move_robot)
         .run();
 }
 
@@ -164,38 +170,20 @@ fn spawn_scene_objects(
                 angular_damping: 0.0,
             },
             RobotObject {
-                linear_speed: 1.50,
-                turn_speed: 5.9,
-                max_impulse: 0.25, // "Torque"
-                snozzle_angle: 0.0,
-                snozzle_pow: 6.0, // m/s,
+                linear_speed: 10.50,
+                turn_speed: 3.5,
+                max_impulse: 0.75, // "Torque"
+                snozzle_angle: 70.0,
+                snozzle_pow: 6.5, // m/s,
+                stiffness: 0.5,
             },
             Mesh3d(meshes.add(Cuboid::new(ROBOT_LENGTH, ROBOT_HEIGHT, ROBOT_LENGTH))),
             MeshMaterial3d(materials.add(GREEN)),
         ))
         .insert((PhysicsObject, DebugObject));
-
-    // Ball
-    commands
-        .spawn(RigidBody::Dynamic)
-        .insert(Velocity::default())
-        .insert(Collider::ball(BALL_RAD))
-        .insert(Ccd::enabled())
-        .insert(Restitution::coefficient(0.5))
-        .insert(ColliderMassProperties::Mass(BALL_WEIGHT))
-        .insert(ReadMassProperties::default())
-        .insert(Damping {
-            linear_damping: 0.1,
-            angular_damping: 1.0,
-        })
-        .insert(Transform::from_xyz(0.0, 1.0, 0.0))
-        .insert(PhysicsObject)
-        .insert(DebugObject)
-        .insert(Mesh3d(meshes.add(Sphere::new(BALL_RAD))))
-        .insert(MeshMaterial3d(materials.add(WHITE)));
 }
 
-fn print_debug(
+fn _print_debug(
     query: Query<(Option<&RobotObject>, &ReadMassProperties, &Velocity), With<DebugObject>>,
 ) {
     for (robot_comp, mass_props, velocity) in &query {
@@ -211,8 +199,6 @@ fn print_debug(
         );
     }
 }
-
-const WHITE: bevy::prelude::Color = Color::srgb(2.8, 2.8, 2.8);
 
 const GREEN: bevy::prelude::Color = Color::srgb(0.0, 2.0, 0.0);
 
@@ -262,42 +248,41 @@ fn take_out(
     mut query: Query<(&Transform, &mut RobotObject)>,
 ) {
     for (transform, mut robot) in &mut query {
-        // let rotation = transform.rotation.w.acos();
-        let rotation: f32 = transform.rotation.to_euler(EulerRot::YXZ).0;
+        let angle_increment: f32 = 1.0;
 
-        let snozzle_angle: f32 = robot.snozzle_angle;
-
-        let rotation_1 = rotation.cos();
-
-        let rotation_2 = rotation.sin();
-
-        let increment: f32 = 0.1;
-
-        if keys.just_pressed(KeyCode::ArrowUp) && robot.snozzle_angle <= 90.0 - increment {
-            robot.snozzle_angle += increment;
-        } else if !(robot.snozzle_angle <= 90.0 - increment) {
-            println!("nono: {:.2}", robot.snozzle_angle);
+        if keys.pressed(KeyCode::ArrowDown) {
+            robot.snozzle_angle = (robot.snozzle_angle - angle_increment).max(0.0);
+        }
+        if keys.pressed(KeyCode::ArrowUp) {
+            robot.snozzle_angle = (robot.snozzle_angle + angle_increment).min(90.0);
         }
 
-        if keys.just_pressed(KeyCode::ArrowDown) && robot.snozzle_angle >= increment {
-            robot.snozzle_angle -= increment;
-        } else if !(robot.snozzle_angle >= increment) {
-            println!("nonononono: {:.2}", robot.snozzle_angle);
+        let pow_increment: f32 = 0.01;
+
+        if keys.pressed(KeyCode::ArrowLeft) {
+            robot.snozzle_pow = (robot.snozzle_pow - pow_increment).max(0.0);
+        }
+        if keys.pressed(KeyCode::ArrowRight) {
+            robot.snozzle_pow = (robot.snozzle_pow + pow_increment).min(8.0);
         }
 
-        println!("yesyes: {:.2}", robot.snozzle_angle);
+        let pitch_radians = -robot.snozzle_angle.to_radians();
 
-        let shoot_velocity = Vec3::new(rotation_2, snozzle_angle, rotation_1) * robot.snozzle_pow;
+        let pitch_rotation = Quat::from_rotation_x(pitch_radians);
 
-        // Vec3::Y * _ ~= (0.0, 1.0, 0.0) * _
-        let spawn_pos = transform.translation + Vec3::Y * ROBOT_HEIGHT;
+        let final_rotation = transform.rotation * pitch_rotation;
+
+        let forward_dir = final_rotation * Vec3::Z;
+        let shoot_velocity = forward_dir * robot.snozzle_pow;
+
+        let spawn_pos = transform.translation + (Vec3::Y * ROBOT_HEIGHT);
+
+        // let spawn_pos = transform.translation + (Vec3::Y * ROBOT_HEIGHT) + (forward_dir * (ROBOT_LENGTH / 1.5));
 
         if keys.just_pressed(KeyCode::KeyS) {
-            println!("transform: {:.2}", rotation);
             commands.spawn(BallBundle::new(spawn_pos, shoot_velocity));
         }
         if keys.pressed(KeyCode::KeyA) {
-            println!("transform: {:.2}", rotation);
             commands.spawn(BallBundle::new(spawn_pos, shoot_velocity));
         }
     }
@@ -343,11 +328,8 @@ fn move_robot(
 
         let target_angular_vel = Vec3::new(0.0, turn_move * robot.turn_speed, 0.0);
 
-        // P - Control factor
-        let stiffness = 0.05;
-
-        let delta_lin = (target_linear_vel - velocity.linvel) * stiffness;
-        let delta_ang = (target_angular_vel - velocity.angvel) * stiffness;
+        let delta_lin = (target_linear_vel - velocity.linvel) * robot.stiffness;
+        let delta_ang = (target_angular_vel - velocity.angvel) * robot.stiffness;
 
         // Doesn't affect y-axis!
         let raw_impulse = Vec3::new(delta_lin.x, 0.0, delta_lin.z) * mass_props.mass;
@@ -386,6 +368,7 @@ struct RobotObject {
     max_impulse: f32,
     snozzle_angle: f32,
     snozzle_pow: f32,
+    stiffness: f32,
 }
 
 #[derive(Debug, Resource)]
@@ -403,6 +386,7 @@ fn setup_graphics(mut commands: Commands, camera_settings: Res<CameraSettings>) 
         Transform::from_xyz(0.0, 5.0, -camera_settings.orbit_distance)
             .looking_at(Vec3::ZERO, Vec3::Y),
     ));
+    // commands.spawn(PerfUiAllEntries::default());
 }
 impl Default for CameraSettings {
     fn default() -> Self {
