@@ -2,6 +2,8 @@ use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
 use iyes_perf_ui::prelude::*;
+use rand::prelude::*;
+use std::f32::consts::TAU;
 use std::{
     f32::consts::{FRAC_PI_2, PI},
     ops::Range,
@@ -24,19 +26,13 @@ fn main() {
         .add_systems(Startup, setup_graphics)
         .add_systems(Startup, setup_physics)
         // .add_systems(Update, print_debug)
-        .add_systems(Update, take_out)
-        .add_systems(FixedUpdate, orbit)
-        .add_systems(Update, reset_simulation)
         .add_systems(FixedUpdate, move_robot)
+        .add_systems(FixedUpdate, success)
+        .add_systems(FixedUpdate, orbit)
+        .add_systems(Update, take_out)
+        .add_systems(Update, reset_simulation)
+        .add_systems(Update, reset_with_random_pos)
         .run();
-}
-
-fn setup_physics(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
-    spawn_scene_objects(&mut commands, &mut meshes, &mut materials);
 }
 
 const FTM: f32 = 0.3048;
@@ -59,22 +55,11 @@ const BALL_WEIGHT: f32 = 0.165 * POUNDS_TO_KILOGRAMS;
 
 const GOAL_HEIGHT: f32 = 0.9845;
 
-fn spawn_scene_objects(
-    commands: &mut Commands,
-    meshes: &mut ResMut<Assets<Mesh>>,
-    materials: &mut ResMut<Assets<StandardMaterial>>,
-) {
-    // Arena
+fn spawn_arena_objects(commands: &mut Commands) {
     commands.spawn((
         Collider::cuboid(WALL_LENGTH / 2.0, 0.001, WALL_LENGTH / 2.0),
         Transform::from_xyz(0.0, -0.001, 0.0),
         PhysicsObject,
-        Mesh3d(meshes.add(Cuboid::new(
-            WALL_LENGTH / 2.0 * 2.0,
-            0.002,
-            WALL_LENGTH / 2.0 * 2.0,
-        ))),
-        MeshMaterial3d(materials.add(Color::srgb(0.8, 0.8, 0.8))),
     ));
 
     commands.spawn((
@@ -152,6 +137,24 @@ fn spawn_scene_objects(
         PhysicsObject,
     ));
 
+    commands.spawn((
+        Sensor,
+        ActiveEvents::COLLISION_EVENTS,
+        Collider::triangle(
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 0.7),
+            Vec3::new(-0.7, 0.0, 0.7),
+        ),
+        Transform::from_xyz(
+            WALL_LENGTH / 2.0,
+            GOAL_HEIGHT - 0.2,
+            (WALL_LENGTH / 2.0) - 0.7,
+        ),
+        GoalObject,
+    ));
+}
+
+fn spawn_robot_objects(pos: Transform, commands: &mut Commands) {
     // Robot
     commands
         .spawn((
@@ -161,7 +164,7 @@ fn spawn_scene_objects(
             LockedAxes::ROTATION_LOCKED_X | LockedAxes::ROTATION_LOCKED_Z,
             RigidBody::Dynamic,
             Collider::cuboid(ROBOT_LENGTH / 2.0, ROBOT_HEIGHT / 2.0, ROBOT_LENGTH / 2.0),
-            Transform::from_xyz(0.0, 0.101, 0.0),
+            pos,
             ColliderMassProperties::Mass(ROBOT_WEIGHT),
             ReadMassProperties::default(),
             Friction::coefficient(0.0),
@@ -177,10 +180,8 @@ fn spawn_scene_objects(
                 snozzle_pow: 6.5, // m/s,
                 stiffness: 0.5,
             },
-            Mesh3d(meshes.add(Cuboid::new(ROBOT_LENGTH, ROBOT_HEIGHT, ROBOT_LENGTH))),
-            MeshMaterial3d(materials.add(GREEN)),
         ))
-        .insert((PhysicsObject, DebugObject));
+        .insert((PhysicsObject, DebugObject, ShouldReset));
 }
 
 fn _print_debug(
@@ -200,48 +201,6 @@ fn _print_debug(
     }
 }
 
-const GREEN: bevy::prelude::Color = Color::srgb(0.0, 2.0, 0.0);
-
-// Bevy only supports 15 for tuples, not structs
-#[derive(Bundle)]
-struct BallBundle {
-    rigid_body: RigidBody,
-    velocity: Velocity,
-    collider: Collider,
-    ccd: Ccd,
-    restitution: Restitution,
-    mass_props: ColliderMassProperties,
-    read_mass: ReadMassProperties,
-    damping: Damping,
-    physics_object: PhysicsObject,
-    debug_object: DebugObject,
-    transform: Transform,
-}
-
-impl BallBundle {
-    fn new(position: Vec3, linear_velocity: Vec3) -> Self {
-        Self {
-            rigid_body: RigidBody::Dynamic,
-            velocity: Velocity {
-                linvel: linear_velocity,
-                angvel: Vec3::new(0.2, 0.4, 0.8),
-            },
-            collider: Collider::ball(BALL_RAD),
-            ccd: Ccd::enabled(),
-            restitution: Restitution::coefficient(0.5),
-            mass_props: ColliderMassProperties::Mass(BALL_WEIGHT),
-            read_mass: ReadMassProperties::default(),
-            damping: Damping {
-                linear_damping: 0.1,
-                angular_damping: 1.0,
-            },
-            physics_object: PhysicsObject,
-            debug_object: DebugObject,
-            transform: Transform::from_translation(position),
-        }
-    }
-}
-
 fn take_out(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
@@ -250,19 +209,19 @@ fn take_out(
     for (transform, mut robot) in &mut query {
         let angle_increment: f32 = 1.0;
 
-        if keys.pressed(KeyCode::ArrowDown) {
+        if keys.just_pressed(KeyCode::ArrowDown) {
             robot.snozzle_angle = (robot.snozzle_angle - angle_increment).max(0.0);
         }
-        if keys.pressed(KeyCode::ArrowUp) {
+        if keys.just_pressed(KeyCode::ArrowUp) {
             robot.snozzle_angle = (robot.snozzle_angle + angle_increment).min(90.0);
         }
 
-        let pow_increment: f32 = 0.01;
+        let pow_increment: f32 = 0.1;
 
-        if keys.pressed(KeyCode::ArrowLeft) {
+        if keys.just_pressed(KeyCode::ArrowLeft) {
             robot.snozzle_pow = (robot.snozzle_pow - pow_increment).max(0.0);
         }
-        if keys.pressed(KeyCode::ArrowRight) {
+        if keys.just_pressed(KeyCode::ArrowRight) {
             robot.snozzle_pow = (robot.snozzle_pow + pow_increment).min(8.0);
         }
 
@@ -284,6 +243,30 @@ fn take_out(
         }
         if keys.pressed(KeyCode::KeyA) {
             commands.spawn(BallBundle::new(spawn_pos, shoot_velocity));
+        }
+    }
+}
+
+fn success(
+    mut collision_events: EventReader<CollisionEvent>,
+    goal_query: Query<&GoalObject>,
+    ball_query: Query<Entity, With<Ball>>,
+) {
+    for event in collision_events.read() {
+        match event {
+            // Otherwise we get the collision stopped events
+            CollisionEvent::Started(entity1, entity2, _flags) => {
+                let goal_hit_ball =
+                    goal_query.get(*entity1).is_ok() && ball_query.get(*entity2).is_ok();
+
+                let ball_hit_goal =
+                    goal_query.get(*entity2).is_ok() && ball_query.get(*entity1).is_ok();
+
+                if goal_hit_ball || ball_hit_goal {
+                    println!("goaled");
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -343,20 +326,64 @@ fn reset_simulation(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     query: Query<Entity, With<PhysicsObject>>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     if keys.just_pressed(KeyCode::KeyR) {
         for entity in &query {
             commands.entity(entity).despawn();
         }
 
-        spawn_scene_objects(&mut commands, &mut meshes, &mut materials);
+        spawn_arena_objects(&mut commands);
+
+        spawn_robot_objects(
+            Transform::from_xyz(0.0, 0.101, 0.0).with_rotation(Quat::from_euler(
+                EulerRot::YXZ,
+                PI / 4.0,
+                0.0,
+                0.0,
+            )),
+            &mut commands,
+        );
+    }
+}
+
+fn reset_with_random_pos(
+    mut commands: Commands,
+    keys: Res<ButtonInput<KeyCode>>,
+    query: Query<Entity, With<ShouldReset>>,
+) {
+    if keys.just_pressed(KeyCode::KeyQ) {
+        for entity in &query {
+            commands.entity(entity).despawn();
+        }
+        spawn_arena_objects(&mut commands);
+        let mut rng = rand::rng();
+
+        let yaw = rng.random_range(0.0..TAU);
+
+        loop {
+            // Feet!
+            let x_feet = rng.random_range(-5.1..5.1);
+            let z_feet = rng.random_range(-5.1..5.1);
+
+            if !(x_feet > 3.0 && z_feet > 3.0) {
+                let spawn_pos = Transform::from_xyz(x_feet * FTM, 0.101, z_feet * FTM)
+                    .with_rotation(Quat::from_euler(EulerRot::YXZ, yaw, 0.0, 0.0));
+
+                spawn_robot_objects(spawn_pos, &mut commands);
+                break;
+            }
+        }
     }
 }
 
 #[derive(Component)]
+struct ShouldReset;
+
+#[derive(Component)]
 struct PhysicsObject;
+
+#[derive(Component)]
+struct GoalObject;
 
 #[derive(Component)]
 struct DebugObject;
@@ -369,6 +396,53 @@ struct RobotObject {
     snozzle_angle: f32,
     snozzle_pow: f32,
     stiffness: f32,
+}
+
+#[derive(Component)]
+struct Ball;
+
+// Bevy only supports 15 for tuples, not structs
+#[derive(Bundle)]
+struct BallBundle {
+    rigid_body: RigidBody,
+    velocity: Velocity,
+    collider: Collider,
+    ccd: Ccd,
+    restitution: Restitution,
+    mass_props: ColliderMassProperties,
+    read_mass: ReadMassProperties,
+    damping: Damping,
+    physics_object: PhysicsObject,
+    debug_object: DebugObject,
+    transform: Transform,
+    ball: Ball,
+    resettable: ShouldReset,
+}
+
+impl BallBundle {
+    fn new(position: Vec3, linear_velocity: Vec3) -> Self {
+        Self {
+            rigid_body: RigidBody::Dynamic,
+            velocity: Velocity {
+                linvel: linear_velocity,
+                angvel: Vec3::new(0.2, 0.4, 0.8),
+            },
+            collider: Collider::ball(BALL_RAD),
+            ccd: Ccd::enabled(),
+            restitution: Restitution::coefficient(0.5),
+            mass_props: ColliderMassProperties::Mass(BALL_WEIGHT),
+            read_mass: ReadMassProperties::default(),
+            damping: Damping {
+                linear_damping: 0.1,
+                angular_damping: 1.0,
+            },
+            physics_object: PhysicsObject,
+            debug_object: DebugObject,
+            transform: Transform::from_translation(position),
+            ball: Ball,
+            resettable: ShouldReset,
+        }
+    }
 }
 
 #[derive(Debug, Resource)]
@@ -387,6 +461,19 @@ fn setup_graphics(mut commands: Commands, camera_settings: Res<CameraSettings>) 
             .looking_at(Vec3::ZERO, Vec3::Y),
     ));
     // commands.spawn(PerfUiAllEntries::default());
+}
+
+fn setup_physics(mut commands: Commands) {
+    spawn_arena_objects(&mut commands);
+    spawn_robot_objects(
+        Transform::from_xyz(0.0, 0.101, 0.0).with_rotation(Quat::from_euler(
+            EulerRot::YXZ,
+            PI / 4.0,
+            0.0,
+            0.0,
+        )),
+        &mut commands,
+    );
 }
 impl Default for CameraSettings {
     fn default() -> Self {
