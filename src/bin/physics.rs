@@ -1,9 +1,12 @@
 use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
+use ipc_channel::ipc::{self, IpcSender};
 use iyes_perf_ui::prelude::*;
 use rand::prelude::*;
-use std::f32::consts::TAU;
+use shared::{Handshake, ModelChoice, Reward};
+use std::env;
+use std::sync::Mutex;
 use std::{
     f32::consts::{FRAC_PI_2, PI},
     ops::Range,
@@ -22,17 +25,130 @@ fn main() {
         .add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
         .add_plugins(RapierDebugRenderPlugin::default())
         // Calculates collisions at 60hz
-        .insert_resource(Time::<Fixed>::from_seconds(1.0 / 60.0))
+        .add_systems(Startup, setup_physics_speed)
         .add_systems(Startup, setup_graphics)
         .add_systems(Startup, setup_physics)
-        // .add_systems(Update, print_debug)
+        .add_systems(Startup, setup_ipc)
         .add_systems(FixedUpdate, move_robot)
-        .add_systems(FixedUpdate, success)
         .add_systems(FixedUpdate, orbit)
-        .add_systems(Update, take_out)
         .add_systems(Update, reset_simulation)
-        .add_systems(Update, reset_with_random_pos)
+        .add_systems(Update, run_training_loop)
         .run();
+}
+
+fn setup_physics_speed(mut timestep_mode: ResMut<TimestepMode>) {
+    *timestep_mode = TimestepMode::Variable {
+        max_dt: 1.0 / 60.0,
+        time_scale: 0.1,
+        substeps: 1,
+    };
+}
+
+fn setup_ipc(mut commands: Commands) {
+    let args: Vec<String> = env::args().collect();
+    let server_name = args.get(1).expect("provide name");
+
+    let (tx_choice, rx_choice) = ipc::channel::<ModelChoice>().unwrap();
+    let (tx_back_channel, rx_back_channel) = ipc::channel::<IpcSender<Reward>>().unwrap();
+
+    let tx_bootstrap: IpcSender<Handshake> = IpcSender::connect(server_name.to_string()).unwrap();
+
+    tx_bootstrap
+        .send(Handshake {
+            tx_choice,
+            tx_back_channel,
+        })
+        .unwrap();
+
+    println!("[Simulation] Waiting for back channel...");
+    let tx_reward = rx_back_channel.recv().unwrap();
+    println!("[Simulation] Connected.");
+
+    commands.insert_resource(TrainingConnection {
+        rx_choice: Mutex::new(rx_choice),
+        tx_reward: Mutex::new(tx_reward),
+        waiting_for_result: false,
+        pending_setup: false,
+        pending_yaw: 0.0,
+        pending_power: 0.0,
+        shot_frame_counter: 0,
+    });
+    println!("Done with IPC setup");
+}
+
+fn run_training_loop(
+    mut commands: Commands,
+    mut connection: ResMut<TrainingConnection>,
+    mut take_out_query: Query<(&mut Transform, &mut RobotObject), Without<Ball>>,
+    mut collision_events: EventReader<CollisionEvent>,
+    reset_query: Query<Entity, With<ShouldReset>>,
+    goal_query: Query<&GoalObject>,
+    ball_query: Query<Entity, With<Ball>>,
+    missed_query: Query<(Entity, &Transform), With<Ball>>,
+) {
+    if connection.pending_setup {
+        if let Ok((transform, _)) = take_out_query.single() {
+            println!(
+                "[Simulation] Executing Choice - Rotation: {:.2}, Power: {:.2} at Position: {}, {}",
+                connection.pending_yaw,
+                connection.pending_power,
+                transform.translation.x,
+                transform.translation.z
+            );
+        }
+
+        take_out(
+            &mut commands,
+            &mut take_out_query,
+            connection.pending_yaw,
+            connection.pending_power,
+        );
+        connection.pending_setup = false;
+        connection.waiting_for_result = true;
+        return;
+    }
+
+    if !connection.waiting_for_result {
+        let received = connection.rx_choice.lock().unwrap().try_recv();
+
+        match received {
+            Ok(choice) => {
+                println!("[Simulation] Received choice: {:?}", choice);
+
+                reset_with_random_pos(&mut commands, &reset_query);
+
+                connection.pending_yaw = choice.yaw;
+                connection.pending_power = choice.power;
+                connection.pending_setup = true;
+
+                connection.shot_frame_counter = 0;
+            }
+            Err(_) => {}
+        }
+    } else {
+        connection.shot_frame_counter += 1;
+
+        let success_reward = check_success(
+            &mut commands,
+            &mut collision_events,
+            &goal_query,
+            &ball_query,
+        );
+        let missed_reward = check_missed(&mut commands, &missed_query);
+
+        let timeout_reward = if connection.shot_frame_counter > 5000 {
+            println!("[Simulation] Timeout - Missed");
+            Some(Reward { reward: -0.1 })
+        } else {
+            None
+        };
+
+        if let Some(reward) = success_reward.or(missed_reward).or(timeout_reward) {
+            println!("[Simulation] Sending Reward: {:?}", reward);
+            connection.tx_reward.lock().unwrap().send(reward).unwrap();
+            connection.waiting_for_result = false;
+        }
+    }
 }
 
 const FTM: f32 = 0.3048;
@@ -176,7 +292,7 @@ fn spawn_robot_objects(pos: Transform, commands: &mut Commands) {
                 linear_speed: 10.50,
                 turn_speed: 3.5,
                 max_impulse: 0.75, // "Torque"
-                snozzle_angle: 70.0,
+                snozzle_angle: 80.0,
                 snozzle_pow: 6.5, // m/s,
                 stiffness: 0.5,
             },
@@ -202,28 +318,15 @@ fn _print_debug(
 }
 
 fn take_out(
-    mut commands: Commands,
-    keys: Res<ButtonInput<KeyCode>>,
-    mut query: Query<(&Transform, &mut RobotObject)>,
+    commands: &mut Commands,
+    query: &mut Query<(&mut Transform, &mut RobotObject), Without<Ball>>,
+    yaw: f32,
+    power: f32,
 ) {
-    for (transform, mut robot) in &mut query {
-        let angle_increment: f32 = 1.0;
+    for (mut transform, mut robot) in query {
+        robot.snozzle_pow = power;
 
-        if keys.just_pressed(KeyCode::ArrowDown) {
-            robot.snozzle_angle = (robot.snozzle_angle - angle_increment).max(0.0);
-        }
-        if keys.just_pressed(KeyCode::ArrowUp) {
-            robot.snozzle_angle = (robot.snozzle_angle + angle_increment).min(90.0);
-        }
-
-        let pow_increment: f32 = 0.1;
-
-        if keys.just_pressed(KeyCode::ArrowLeft) {
-            robot.snozzle_pow = (robot.snozzle_pow - pow_increment).max(0.0);
-        }
-        if keys.just_pressed(KeyCode::ArrowRight) {
-            robot.snozzle_pow = (robot.snozzle_pow + pow_increment).min(8.0);
-        }
+        transform.rotation = Quat::from_rotation_y(yaw.to_radians());
 
         let pitch_radians = -robot.snozzle_angle.to_radians();
 
@@ -236,39 +339,52 @@ fn take_out(
 
         let spawn_pos = transform.translation + (Vec3::Y * ROBOT_HEIGHT);
 
-        // let spawn_pos = transform.translation + (Vec3::Y * ROBOT_HEIGHT) + (forward_dir * (ROBOT_LENGTH / 1.5));
-
-        if keys.just_pressed(KeyCode::KeyS) {
-            commands.spawn(BallBundle::new(spawn_pos, shoot_velocity));
-        }
-        if keys.pressed(KeyCode::KeyA) {
-            commands.spawn(BallBundle::new(spawn_pos, shoot_velocity));
-        }
+        commands.spawn(BallBundle::new(spawn_pos, shoot_velocity));
     }
 }
 
-fn success(
-    mut collision_events: EventReader<CollisionEvent>,
-    goal_query: Query<&GoalObject>,
-    ball_query: Query<Entity, With<Ball>>,
-) {
+fn check_success(
+    commands: &mut Commands,
+    collision_events: &mut EventReader<CollisionEvent>,
+    goal_query: &Query<&GoalObject>,
+    ball_query: &Query<Entity, With<Ball>>,
+) -> Option<Reward> {
     for event in collision_events.read() {
         match event {
-            // Otherwise we get the collision stopped events
             CollisionEvent::Started(entity1, entity2, _flags) => {
-                let goal_hit_ball =
-                    goal_query.get(*entity1).is_ok() && ball_query.get(*entity2).is_ok();
+                let ball_entity = if goal_query.contains(*entity1) && ball_query.contains(*entity2)
+                {
+                    Some(*entity2)
+                } else if goal_query.contains(*entity2) && ball_query.contains(*entity1) {
+                    Some(*entity1)
+                } else {
+                    None
+                };
 
-                let ball_hit_goal =
-                    goal_query.get(*entity2).is_ok() && ball_query.get(*entity1).is_ok();
-
-                if goal_hit_ball || ball_hit_goal {
+                if let Some(entity) = ball_entity {
                     println!("goaled");
+                    commands.entity(entity).despawn();
+                    return Some(Reward { reward: 1.0 });
                 }
             }
             _ => {}
         }
     }
+    None
+}
+
+fn check_missed(
+    commands: &mut Commands,
+    query: &Query<(Entity, &Transform), With<Ball>>,
+) -> Option<Reward> {
+    for (entity, transform) in query {
+        if transform.translation.y <= BALL_RAD + 0.05 {
+            println!("missed");
+            commands.entity(entity).despawn();
+            return Some(Reward { reward: -0.1 });
+        }
+    }
+    None
 }
 
 fn move_robot(
@@ -346,32 +462,24 @@ fn reset_simulation(
     }
 }
 
-fn reset_with_random_pos(
-    mut commands: Commands,
-    keys: Res<ButtonInput<KeyCode>>,
-    query: Query<Entity, With<ShouldReset>>,
-) {
-    if keys.just_pressed(KeyCode::KeyQ) {
-        for entity in &query {
-            commands.entity(entity).despawn();
-        }
-        spawn_arena_objects(&mut commands);
-        let mut rng = rand::rng();
+fn reset_with_random_pos(commands: &mut Commands, query: &Query<Entity, With<ShouldReset>>) {
+    for entity in query {
+        commands.entity(entity).despawn();
+    }
+    spawn_arena_objects(commands);
+    let mut rng = rand::rng();
 
-        let yaw = rng.random_range(0.0..TAU);
+    loop {
+        // Feet!
+        let x_feet = rng.random_range(-5.1..5.1);
+        let z_feet = rng.random_range(-5.1..5.1);
 
-        loop {
-            // Feet!
-            let x_feet = rng.random_range(-5.1..5.1);
-            let z_feet = rng.random_range(-5.1..5.1);
+        if !(x_feet > 3.0 && z_feet > 3.0) {
+            let spawn_pos = Transform::from_xyz(x_feet * FTM, 0.070, z_feet * FTM)
+                .with_rotation(Quat::from_euler(EulerRot::YXZ, 0.0, 0.0, 0.0));
 
-            if !(x_feet > 3.0 && z_feet > 3.0) {
-                let spawn_pos = Transform::from_xyz(x_feet * FTM, 0.101, z_feet * FTM)
-                    .with_rotation(Quat::from_euler(EulerRot::YXZ, yaw, 0.0, 0.0));
-
-                spawn_robot_objects(spawn_pos, &mut commands);
-                break;
-            }
+            spawn_robot_objects(spawn_pos, commands);
+            break;
         }
     }
 }
@@ -452,6 +560,17 @@ struct CameraSettings {
     pub pitch_range: Range<f32>,
     pub yaw_speed: f32,
     pub pan_speed: f32,
+}
+
+#[derive(Resource)]
+struct TrainingConnection {
+    rx_choice: Mutex<ipc::IpcReceiver<ModelChoice>>,
+    tx_reward: Mutex<IpcSender<Reward>>,
+    waiting_for_result: bool,
+    pending_setup: bool,
+    pending_yaw: f32,
+    pending_power: f32,
+    shot_frame_counter: usize,
 }
 
 fn setup_graphics(mut commands: Commands, camera_settings: Res<CameraSettings>) {
