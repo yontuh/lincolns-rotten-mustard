@@ -61,6 +61,8 @@ pub struct ModelChoice {
 pub struct ModelChoices {
     pub yaws: Vec<f32>,
     pub powers: Vec<f32>,
+    pub x_vec: Vec<f32>,
+    pub z_vec: Vec<f32>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -79,8 +81,13 @@ pub struct Reward {
     pub reward: f32,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Rewards {
+    pub rewards: Vec<f32>,
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct Handshake {
-    pub tx_choice: IpcSender<ModelChoice>,
-    pub tx_back_channel: IpcSender<IpcSender<Reward>>,
+    pub tx_choice: IpcSender<ModelChoices>,
+    pub tx_back_channel: IpcSender<IpcSender<Rewards>>,
 }

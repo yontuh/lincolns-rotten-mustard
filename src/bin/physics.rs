@@ -4,7 +4,7 @@ use bevy_rapier3d::prelude::*;
 use ipc_channel::ipc::{self, IpcSender};
 use iyes_perf_ui::prelude::*;
 use rand::prelude::*;
-use shared::{Handshake, ModelChoice, Reward};
+use shared::{Handshake, ModelChoice, ModelChoices, Poses, Reward, Rewards};
 use std::env;
 use std::sync::Mutex;
 use std::{
@@ -39,8 +39,8 @@ fn main() {
 fn setup_physics_speed(mut timestep_mode: ResMut<TimestepMode>) {
     *timestep_mode = TimestepMode::Variable {
         max_dt: 1.0 / 60.0,
+        time_scale: 1.0,
         // time_scale: 0.1,
-        time_scale: 999999999999999.0,
         substeps: 1,
     };
 }
@@ -49,8 +49,8 @@ fn setup_ipc(mut commands: Commands) {
     let args: Vec<String> = env::args().collect();
     let server_name = args.get(1).expect("provide name");
 
-    let (tx_choice, rx_choice) = ipc::channel::<ModelChoice>().unwrap();
-    let (tx_back_channel, rx_back_channel) = ipc::channel::<IpcSender<Reward>>().unwrap();
+    let (tx_choice, rx_choice) = ipc::channel::<ModelChoices>().unwrap();
+    let (tx_back_channel, rx_back_channel) = ipc::channel::<IpcSender<Rewards>>().unwrap();
 
     let tx_bootstrap: IpcSender<Handshake> = IpcSender::connect(server_name.to_string()).unwrap();
 
@@ -66,13 +66,21 @@ fn setup_ipc(mut commands: Commands) {
     println!("[Simulation] Connected.");
 
     commands.insert_resource(TrainingConnection {
-        rx_choice: Mutex::new(rx_choice),
+        rx_choices: Mutex::new(rx_choice),
         tx_reward: Mutex::new(tx_reward),
         waiting_for_result: false,
         pending_setup: false,
-        pending_yaw: 0.0,
-        pending_power: 0.0,
+        pending_launch: false,
+        index: 0,
+        pending_yaws: Vec::new(),
+        pending_powers: Vec::new(),
+        pending_x_pos: Vec::new(),
+        pending_z_pos: Vec::new(),
         shot_frame_counter: 0,
+        rewards: Rewards {
+            rewards: Vec::new(),
+        },
+        batch_size: None,
     });
     println!("Done with IPC setup");
 }
@@ -87,45 +95,81 @@ fn run_training_loop(
     ball_query: Query<Entity, With<Ball>>,
     missed_query: Query<(Entity, &Transform), With<Ball>>,
 ) {
+    if connection.pending_launch {
+        take_out(
+            &mut commands,
+            &mut take_out_query,
+            connection.pending_yaws[connection.index],
+            connection.pending_powers[connection.index],
+        );
+        connection.pending_launch = false;
+    }
+
+    // Setup the Arena
     if connection.pending_setup {
         if let Ok((transform, _)) = take_out_query.single() {
+            reset_with_pos(
+                &mut commands,
+                &reset_query,
+                connection.pending_x_pos[connection.index],
+                connection.pending_z_pos[connection.index],
+            );
             println!(
                 "[Simulation] Executing Choice - Rotation: {:.2}, Power: {:.2} at Position: {}, {}",
-                connection.pending_yaw,
-                connection.pending_power,
+                connection.pending_yaws[connection.index],
+                connection.pending_powers[connection.index],
                 transform.translation.x,
                 transform.translation.z
             );
         }
-
-        take_out(
-            &mut commands,
-            &mut take_out_query,
-            connection.pending_yaw,
-            connection.pending_power,
-        );
+        connection.pending_launch = true;
         connection.pending_setup = false;
         connection.waiting_for_result = true;
         return;
     }
 
+    // Wait for and parse connection
     if !connection.waiting_for_result {
-        let received = connection.rx_choice.lock().unwrap().try_recv();
+        // Halts until connection
+        let received = connection.rx_choices.lock().unwrap().try_recv();
 
         match received {
-            Ok(choice) => {
-                println!("[Simulation] Received choice: {:?}", choice);
+            Ok(choices) => {
+                println!(
+                    "[Simulation] Received {:?} choices. Example yaws: {:?}, power: {:?} ",
+                    choices.yaws.len(),
+                    choices.yaws[0],
+                    choices.powers[0]
+                );
 
-                reset_with_random_pos(&mut commands, &reset_query);
+                println!("Recieved Choices: {:?}", choices.x_vec);
 
-                connection.pending_yaw = choice.yaw;
-                connection.pending_power = choice.power;
+                connection.pending_yaws = Vec::new();
+                connection.pending_powers = Vec::new();
+                connection.pending_x_pos = Vec::new();
+                connection.pending_yaws = Vec::new();
+
+                // Rewards is reset in the else clause
+
+                for i in 0..choices.yaws.len() {
+                    // reset_with_random_pos(&mut commands, &reset_query);
+
+                    connection.pending_yaws.push(choices.yaws[i]);
+                    connection.pending_powers.push(choices.powers[i]);
+                    connection.pending_x_pos.push(choices.x_vec[i]);
+                    connection.pending_z_pos.push(choices.z_vec[i]);
+                }
+                println!("Pending_x_poses: {:?}", connection.pending_x_pos);
                 connection.pending_setup = true;
+                connection.batch_size = Some(choices.yaws.len());
 
                 connection.shot_frame_counter = 0;
+
+                connection.index = 0;
             }
             Err(_) => {}
         }
+    // Track simulation
     } else {
         connection.shot_frame_counter += 1;
 
@@ -145,9 +189,29 @@ fn run_training_loop(
         };
 
         if let Some(reward) = success_reward.or(missed_reward).or(timeout_reward) {
-            println!("[Simulation] Sending Reward: {:?}", reward);
-            connection.tx_reward.lock().unwrap().send(reward).unwrap();
-            connection.waiting_for_result = false;
+            connection.rewards.rewards.push(reward.reward);
+            connection.index += 1;
+            println!("Index increased to: {}", connection.index);
+            if connection.rewards.rewards.len() == connection.batch_size.unwrap() {
+                println!("[Simulation] Sending Reward: {:?}", reward);
+                // Replaces connection's rewards with Rewards{rewards: Vec::new()}
+                // and returns the value that was previously in connection's rewards.
+                let rewards_to_send = std::mem::replace(
+                    &mut connection.rewards,
+                    Rewards {
+                        rewards: Vec::new(),
+                    },
+                );
+                connection
+                    .tx_reward
+                    .lock()
+                    .unwrap()
+                    .send(rewards_to_send)
+                    .unwrap();
+                connection.waiting_for_result = false;
+            } else {
+                connection.pending_setup = true;
+            }
         }
     }
 }
@@ -480,13 +544,42 @@ fn reset_with_pos(
     spawn_arena_objects(commands);
 
     // Feet!
-    if !(x_feet > 3.0 && z_feet > 3.0) {
+    if x_feet > 3.0 && z_feet > 3.0 {
         println!("Something has gone wrong, reset_with_pos()");
     }
     let spawn_pos = Transform::from_xyz(x_feet * FTM, 0.070, z_feet * FTM)
         .with_rotation(Quat::from_euler(EulerRot::YXZ, 0.0, 0.0, 0.0));
 
     spawn_robot_objects(spawn_pos, commands);
+}
+
+fn handle_vecs_of_choices_and_the_corresponding_poses_and_return_the_rewards(
+    commands: &mut Commands,
+    reset_query: &Query<Entity, With<ShouldReset>>,
+    take_out_query: &mut Query<(&mut Transform, &mut RobotObject), Without<Ball>>,
+    poses: Poses,
+    choices: ModelChoices,
+) -> Rewards {
+    let rewards = Rewards {
+        rewards: Vec::with_capacity(poses.x_vec.len()),
+    };
+    // Should parallelize in the future
+    for i in rewards.rewards.iter() {
+        reset_with_pos(
+            commands,
+            reset_query,
+            poses.x_vec[*i as usize],
+            poses.z_vec[*i as usize],
+        );
+        take_out(
+            commands,
+            take_out_query,
+            choices.yaws[*i as usize],
+            choices.powers[*i as usize],
+        )
+    }
+
+    return rewards;
 }
 
 #[derive(Component)]
@@ -569,13 +662,19 @@ struct CameraSettings {
 
 #[derive(Resource)]
 struct TrainingConnection {
-    rx_choice: Mutex<ipc::IpcReceiver<ModelChoice>>,
-    tx_reward: Mutex<IpcSender<Reward>>,
+    rx_choices: Mutex<ipc::IpcReceiver<ModelChoices>>,
+    tx_reward: Mutex<IpcSender<Rewards>>,
     waiting_for_result: bool,
     pending_setup: bool,
-    pending_yaw: f32,
-    pending_power: f32,
+    pending_launch: bool,
+    index: usize,
+    pending_yaws: Vec<f32>,
+    pending_powers: Vec<f32>,
+    pending_x_pos: Vec<f32>,
+    pending_z_pos: Vec<f32>,
     shot_frame_counter: usize,
+    rewards: Rewards,
+    batch_size: Option<usize>,
 }
 
 fn setup_graphics(mut commands: Commands, camera_settings: Res<CameraSettings>) {

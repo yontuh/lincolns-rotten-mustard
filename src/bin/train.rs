@@ -1,6 +1,6 @@
 use ipc_channel::ipc::{self, IpcOneShotServer};
 use rand::prelude::*;
-use shared::{Handshake, ModelChoice, ModelChoices, Pos, Poses, Reward};
+use shared::{Handshake, ModelChoice, ModelChoices, Pos, Poses, Reward, Rewards};
 use std::process::Command;
 
 use burn::{
@@ -12,10 +12,10 @@ use burn::{
 use rand_distr::{Distribution, Normal};
 use shared::{Agent, AgentConfig};
 
-const ARTIFACT_DIR: &str = "/tmp/burn_artillery";
+const ARTIFACT_DIR: &str = "/tmp/rotten_mustard";
 const NUM_ITERATIONS: usize = 5000; // Number of batch updates
-const BATCH_SIZE: usize = 128; // Larger values generalize the gradient, finds the average value
-                               // on a larger (and therefore more predictable) plane
+const BATCH_SIZE: usize = 10; // Larger values generalize the gradient, finds the average value
+                              // on a larger (and therefore more predictable) plane
 const LEARNING_RATE: f64 = 0.001; // How aggressively to backpropagate
 const HIDDEN_SIZE: usize = 64; // We first set it here
 
@@ -31,19 +31,61 @@ fn main() {
     let (_, handshake): (_, Handshake) = server.accept().unwrap();
     let tx_choice = handshake.tx_choice;
 
-    let (tx_reward, rx_reward) = ipc::channel::<Reward>().unwrap();
+    let (tx_reward, rx_reward) = ipc::channel::<Rewards>().unwrap();
 
     handshake.tx_back_channel.send(tx_reward).unwrap();
 
-    println!("[Model] Handshake complete. Starting loop.");
+    println!("[Model] Handshake complete.");
 
-    for _i in 0..500 {
-        let choice = ModelChoice {
-            yaw: 45.0,
-            power: 8.5,
+    // -------------------------------------------------
+
+    type MyBackend = Autodiff<Wgpu>;
+    let device = WgpuDevice::default();
+
+    let mut model: Agent<MyBackend> = AgentConfig::new(HIDDEN_SIZE).init(&device);
+    // let mut optimizer = AdamConfig::new().init();
+
+    for _i in 0..NUM_ITERATIONS {
+        let poses = generate_poses(BATCH_SIZE);
+        let mut model_choices: ModelChoices = ModelChoices {
+            yaws: Vec::with_capacity(BATCH_SIZE),
+            powers: Vec::with_capacity(BATCH_SIZE),
+            x_vec: poses.x_vec,
+            z_vec: poses.z_vec,
         };
-        println!("\n[Model] Sending Choice: {:?}", choice);
-        tx_choice.send(choice).unwrap();
+        println!("Model Choices: {:?}", model_choices.x_vec);
+
+        let mut combined_inputs: Vec<f32> = Vec::with_capacity(BATCH_SIZE * 2);
+        for i in 0..BATCH_SIZE {
+            combined_inputs.push(model_choices.x_vec[i]);
+            combined_inputs.push(model_choices.z_vec[i]);
+        }
+
+        let inputs_tensor =
+            Tensor::<MyBackend, 1>::from_floats(combined_inputs.as_slice(), &device)
+                .reshape([BATCH_SIZE, 2]);
+
+        let mus = model.forward(inputs_tensor);
+
+        let mus_reshaped = mus.reshape([BATCH_SIZE * 2, 1]);
+
+        let mus_vec: Vec<f32> = mus_reshaped.to_data().to_vec().unwrap();
+
+        for i in 0..BATCH_SIZE {
+            model_choices.yaws.push(combined_inputs[i]);
+            model_choices.powers.push(combined_inputs[i + 1]);
+        }
+
+        // Currently nothing done with Gaussian whatever!
+
+        let mut rng = rand::rng();
+
+        println!(
+            "\n[Model] Sending Choices. Example, yaw: {:?}, power: {:?}",
+            model_choices.yaws[0], model_choices.powers[0]
+        );
+        println!("2nd Model Choices: {:?}", model_choices.x_vec);
+        tx_choice.send(model_choices).unwrap();
 
         let reward = rx_reward.recv().unwrap();
         println!("[Model] Received Reward: {:?}", reward);
@@ -54,23 +96,11 @@ fn main() {
     let _ = child.wait();
 }
 
-// Quantity assumes 0 indexing!
-fn generate_choices(quantity: i32, poses: Poses) -> ModelChoices {
-    let mut model_choices: ModelChoices = ModelChoices {
-        yaws: Vec::with_capacity(quantity as usize),
-        powers: Vec::with_capacity(quantity as usize),
-    };
-
-    let mut rng = rand::rng();
-
-    return model_choices;
-}
-
-// Quantity assumes 0 indexing!
-fn generate_poses(quantity: i32) -> Poses {
+// Quantity assumes 1 indexing!
+fn generate_poses(quantity: usize) -> Poses {
     let mut poses = Poses {
-        x_vec: Vec::with_capacity(quantity as usize),
-        z_vec: Vec::with_capacity(quantity as usize),
+        x_vec: Vec::with_capacity(quantity),
+        z_vec: Vec::with_capacity(quantity),
     };
 
     let mut rng = rand::rng();
@@ -83,7 +113,8 @@ fn generate_poses(quantity: i32) -> Poses {
             poses.x_vec.push(x_feet);
             poses.z_vec.push(z_feet);
         }
-        if poses.x_vec.len() == quantity as usize {
+        if poses.x_vec.len() == quantity {
+            println!("generate poses x values: {:?}", poses.x_vec);
             break;
         }
     }
