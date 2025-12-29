@@ -39,7 +39,8 @@ fn main() {
 fn setup_physics_speed(mut timestep_mode: ResMut<TimestepMode>) {
     *timestep_mode = TimestepMode::Variable {
         max_dt: 1.0 / 60.0,
-        time_scale: 0.1,
+        // time_scale: 0.1,
+        time_scale: 999999999999999.0,
         substeps: 1,
     };
 }
@@ -300,23 +301,6 @@ fn spawn_robot_objects(pos: Transform, commands: &mut Commands) {
         .insert((PhysicsObject, DebugObject, ShouldReset));
 }
 
-fn _print_debug(
-    query: Query<(Option<&RobotObject>, &ReadMassProperties, &Velocity), With<DebugObject>>,
-) {
-    for (robot_comp, mass_props, velocity) in &query {
-        let name = if robot_comp.is_some() {
-            "Robot"
-        } else {
-            "Ball"
-        };
-
-        println!(
-            "{} Stats: Mass: {:.2} kg | velocity: {:.2}",
-            name, mass_props.mass, velocity.linvel
-        );
-    }
-}
-
 fn take_out(
     commands: &mut Commands,
     query: &mut Query<(&mut Transform, &mut RobotObject), Without<Ball>>,
@@ -362,7 +346,7 @@ fn check_success(
                 };
 
                 if let Some(entity) = ball_entity {
-                    println!("goaled");
+                    println!("✅ goaled ✅✅✅✅✅✅✅");
                     commands.entity(entity).despawn();
                     return Some(Reward { reward: 1.0 });
                 }
@@ -381,7 +365,7 @@ fn check_missed(
         if transform.translation.y <= BALL_RAD + 0.05 {
             println!("missed");
             commands.entity(entity).despawn();
-            return Some(Reward { reward: -0.1 });
+            return Some(Reward { reward: -1.0 });
         }
     }
     None
@@ -482,6 +466,27 @@ fn reset_with_random_pos(commands: &mut Commands, query: &Query<Entity, With<Sho
             break;
         }
     }
+}
+
+fn reset_with_pos(
+    commands: &mut Commands,
+    query: &Query<Entity, With<ShouldReset>>,
+    x_feet: f32,
+    z_feet: f32,
+) {
+    for entity in query {
+        commands.entity(entity).despawn();
+    }
+    spawn_arena_objects(commands);
+
+    // Feet!
+    if !(x_feet > 3.0 && z_feet > 3.0) {
+        println!("Something has gone wrong, reset_with_pos()");
+    }
+    let spawn_pos = Transform::from_xyz(x_feet * FTM, 0.070, z_feet * FTM)
+        .with_rotation(Quat::from_euler(EulerRot::YXZ, 0.0, 0.0, 0.0));
+
+    spawn_robot_objects(spawn_pos, commands);
 }
 
 #[derive(Component)]

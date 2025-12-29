@@ -7,9 +7,14 @@ edition = "2024"
 bevy = {version = "0.16.1", features = ["dynamic_linking", "wayland"]}
 bevy_rapier3d = { version = "0.31.0", features = ["simd-stable", "debug-render-3d"]}
 iyes_perf_ui = "0.5.0"
+
 rand = "0.9.2"
+rand_distr = "0.5.1"
+
 ipc-channel = "0.20.2"
 serde = { version = "1.0.228", features = ["derive"] }
+
+burn = { version = "0.19.1", default-features = false, features = ["std", "wgpu", "train"] }
 
 [profile.dev]
 opt-level = 0
