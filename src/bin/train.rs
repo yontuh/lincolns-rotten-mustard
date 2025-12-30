@@ -12,6 +12,9 @@ use burn::{
 use rand_distr::{Distribution, Normal};
 use shared::{Agent, AgentConfig};
 
+use std::fs::File;
+use std::io::Write;
+
 const ARTIFACT_DIR: &str = "/tmp/rotten_mustard";
 const NUM_ITERATIONS: usize = 5000; // Number of batch updates
 const BATCH_SIZE: usize = 10; // Larger values generalize the gradient, finds the average value
@@ -35,6 +38,12 @@ fn main() {
         ])
         .spawn()
         .expect("Failed to spawn simulation");
+
+    // ---
+
+    let mut file = File::create("the_stats.give_a_follow").unwrap();
+
+    // ---
 
     let (_, handshake): (_, Handshake) = server.accept().unwrap();
     let tx_choice = handshake.tx_choice;
@@ -95,10 +104,14 @@ fn main() {
         println!("2nd Model Choices: {:?}", model_choices.x_vec);
         tx_choice.send(model_choices).unwrap();
 
-        let reward = rx_reward.recv().unwrap();
-        println!("[Model] Received Reward: {:?}", reward);
+        let rewards = rx_reward.recv().unwrap();
+        println!("[Model] Received Rewards: {:?}", rewards);
 
         println!("🎃🎃🎃🎃 Iteration: {} 🎃🎃🎃🎃", i);
+
+        writeln!(file, "🎃🎃🎃🎃 Iteration: {} 🎃🎃🎃🎃", i).unwrap();
+
+        writeln!(file, "{:?}", rewards.rewards).unwrap();
 
         // thread::sleep(Duration::from_millis(1000));
     }

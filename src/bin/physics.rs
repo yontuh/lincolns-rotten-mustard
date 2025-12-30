@@ -39,7 +39,7 @@ fn main() {
 fn setup_physics_speed(mut timestep_mode: ResMut<TimestepMode>) {
     *timestep_mode = TimestepMode::Variable {
         max_dt: 1.0 / 60.0,
-        time_scale: 50.0,
+        time_scale: 100.0,
         // time_scale: 0.1,
         substeps: 1,
     };
@@ -511,28 +511,6 @@ fn reset_simulation(
     }
 }
 
-fn reset_with_random_pos(commands: &mut Commands, query: &Query<Entity, With<ShouldReset>>) {
-    for entity in query {
-        commands.entity(entity).despawn();
-    }
-    spawn_arena_objects(commands);
-    let mut rng = rand::rng();
-
-    loop {
-        // Feet!
-        let x_feet = rng.random_range(-5.1..5.1);
-        let z_feet = rng.random_range(-5.1..5.1);
-
-        if !(x_feet > 3.0 && z_feet > 3.0) {
-            let spawn_pos = Transform::from_xyz(x_feet * FTM, 0.070, z_feet * FTM)
-                .with_rotation(Quat::from_euler(EulerRot::YXZ, 0.0, 0.0, 0.0));
-
-            spawn_robot_objects(spawn_pos, commands);
-            break;
-        }
-    }
-}
-
 fn reset_with_pos(
     commands: &mut Commands,
     query: &Query<Entity, With<ShouldReset>>,
@@ -551,35 +529,6 @@ fn reset_with_pos(
         .with_rotation(Quat::from_euler(EulerRot::YXZ, 0.0, 0.0, 0.0));
 
     spawn_robot_objects(spawn_pos, commands);
-}
-
-fn handle_vecs_of_choices_and_the_corresponding_poses_and_return_the_rewards(
-    commands: &mut Commands,
-    reset_query: &Query<Entity, With<ShouldReset>>,
-    take_out_query: &mut Query<(&mut Transform, &mut RobotObject), Without<Ball>>,
-    poses: Poses,
-    choices: ModelChoices,
-) -> Rewards {
-    let rewards = Rewards {
-        rewards: Vec::with_capacity(poses.x_vec.len()),
-    };
-    // Should parallelize in the future
-    for i in rewards.rewards.iter() {
-        reset_with_pos(
-            commands,
-            reset_query,
-            poses.x_vec[*i as usize],
-            poses.z_vec[*i as usize],
-        );
-        take_out(
-            commands,
-            take_out_query,
-            choices.yaws[*i as usize],
-            choices.powers[*i as usize],
-        )
-    }
-
-    return rewards;
 }
 
 #[derive(Component)]
