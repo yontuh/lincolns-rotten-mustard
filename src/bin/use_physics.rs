@@ -1,13 +1,8 @@
 use ipc_channel::ipc::{self, IpcOneShotServer};
-use shared::{Handshake, ModelChoice, ModelChoices, Pos, Poses, Reward, Rewards};
+use shared::{Handshake, ModelChoices, Rewards};
 use std::process::Command;
 
 use std::io::{self, Write};
-
-use rand_distr::{Distribution, Normal};
-use shared::{Agent, AgentConfig};
-
-use std::fs::File;
 
 use std::thread;
 use std::time::Duration;
@@ -108,4 +103,5 @@ fn main() {
 
         println!("Rewards: {:?}", rewards);
     }
+    let _ = child.wait();
 }

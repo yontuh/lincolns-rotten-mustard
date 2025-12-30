@@ -4,8 +4,7 @@ use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
 use ipc_channel::ipc::{self, IpcSender};
 use iyes_perf_ui::prelude::*;
-use rand::prelude::*;
-use shared::{Handshake, ModelChoice, ModelChoices, Poses, Reward, Rewards};
+use shared::{Handshake, ModelChoices, Reward, Rewards};
 use std::env;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -34,7 +33,7 @@ fn main() {
             .add_systems(Startup, setup_graphics)
             .add_systems(FixedUpdate, move_robot)
             .add_systems(FixedUpdate, orbit)
-            .add_systems(Update, reset_simulation);
+            .add_systems(FixedUpdate, reset_simulation);
     }
 
     app.init_resource::<CameraSettings>()
@@ -43,7 +42,7 @@ fn main() {
         .add_systems(Startup, setup_physics_speed)
         .add_systems(Startup, setup_physics)
         .add_systems(Startup, setup_ipc)
-        .add_systems(Update, run_training_loop)
+        .add_systems(FixedUpdate, run_training_loop)
         .run();
 }
 
@@ -373,9 +372,13 @@ fn take_out(
     power: f32,
 ) {
     for (mut transform, mut robot) in query {
-        robot.snozzle_pow = power;
+        let adjusted_power = power + 7.0;
 
-        transform.rotation = Quat::from_rotation_y(yaw.to_radians());
+        robot.snozzle_pow = adjusted_power;
+
+        let adjusted_yaw = yaw + 45.0;
+
+        transform.rotation = Quat::from_rotation_y(adjusted_yaw.to_radians());
 
         let pitch_radians = -robot.snozzle_angle.to_radians();
 
@@ -428,7 +431,7 @@ fn check_missed(
 ) -> Option<Reward> {
     for (entity, transform) in query {
         if transform.translation.y <= BALL_RAD + 0.05 {
-            println!("missed");
+            println!("♈♈ missed ♈♈");
             commands.entity(entity).despawn();
             return Some(Reward { reward: 0.0 });
         }
@@ -525,7 +528,9 @@ fn reset_with_pos(
     if x_feet > 3.0 && z_feet > 3.0 {
         println!("Something has gone wrong, reset_with_pos()");
     }
-    let spawn_pos = Transform::from_xyz(x_feet * FTM, 0.070, z_feet * FTM)
+    let y = (ROBOT_HEIGHT / 2.0) + 0.0001;
+
+    let spawn_pos = Transform::from_xyz(x_feet * FTM, y, z_feet * FTM)
         .with_rotation(Quat::from_euler(EulerRot::YXZ, 0.0, 0.0, 0.0));
 
     spawn_robot_objects(spawn_pos, commands);

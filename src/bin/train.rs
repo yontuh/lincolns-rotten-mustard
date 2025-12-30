@@ -1,6 +1,6 @@
 use ipc_channel::ipc::{self, IpcOneShotServer};
 use rand::prelude::*;
-use shared::{Handshake, ModelChoice, ModelChoices, Pos, Poses, Reward, Rewards};
+use shared::{Handshake, ModelChoices, Poses, Rewards};
 use std::process::Command;
 
 use burn::{
@@ -26,7 +26,7 @@ fn main() {
     let (server, server_name) = IpcOneShotServer::new().unwrap();
     println!("[Model] IPC Server started. Spawning simulation...");
 
-    let mut child = Command::new("cargo")
+    let mut physics_bin = Command::new("cargo")
         .args([
             "run",
             "--quiet",
@@ -60,8 +60,8 @@ fn main() {
     let mut model: Agent<MyBackend> = AgentConfig::new(HIDDEN_SIZE).init(&device);
     let mut optimizer = AdamConfig::new().init();
 
-    let noise_std_dev = 15.0; // Standard deviation
-    let normal_dist = Normal::new(0.0, noise_std_dev).unwrap();
+    let yaw_normal_dist = Normal::new(0.0, 2.0).unwrap();
+    let power_normal_dist = Normal::new(0.0, 0.2).unwrap();
     let mut rng = rand::rng();
 
     for i in 0..NUM_ITERATIONS {
@@ -95,8 +95,8 @@ fn main() {
         // Add Gaussian deviation
         for i in 0..BATCH_SIZE {
             let offset = i * 2;
-            let yaw_noise = normal_dist.sample(&mut rng);
-            let power_noise = normal_dist.sample(&mut rng);
+            let yaw_noise = yaw_normal_dist.sample(&mut rng);
+            let power_noise = power_normal_dist.sample(&mut rng);
             model_choices.yaws.push(mus_vec[offset] + yaw_noise);
             model_choices.powers.push(mus_vec[offset + 1] + power_noise);
             mus_vec_deviated.push(mus_vec[offset] + yaw_noise);
@@ -149,7 +149,19 @@ fn main() {
         writeln!(file, "{:?}", rewards.rewards).unwrap();
     }
 
-    let _ = child.wait();
+    std::fs::create_dir_all(ARTIFACT_DIR).ok();
+    AgentConfig {
+        hidden_size: HIDDEN_SIZE,
+    }
+    .save(format!("{}/config.json", ARTIFACT_DIR))
+    .unwrap();
+    model
+        .save_file(format!("{}/model", ARTIFACT_DIR), &CompactRecorder::new())
+        .unwrap();
+
+    println!("Training Done");
+
+    let _ = physics_bin.wait();
 }
 
 // Quantity assumes 1 indexing!
