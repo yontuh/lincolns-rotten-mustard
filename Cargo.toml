@@ -42,3 +42,7 @@ path = "src/bin/train.rs"
 [[bin]]
 name = "infer"
 path = "src/bin/infer.rs"
+
+[[bin]]
+name = "use_physics"
+path = "src/bin/use_physics.rs"

@@ -154,7 +154,7 @@ fn run_training_loop(
                 connection.pending_yaws = Vec::new();
                 connection.pending_powers = Vec::new();
                 connection.pending_x_pos = Vec::new();
-                connection.pending_yaws = Vec::new();
+                connection.pending_z_pos = Vec::new();
 
                 // Rewards is reset in the else clause
 
