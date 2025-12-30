@@ -16,9 +16,9 @@ use std::fs::File;
 use std::io::Write;
 
 const ARTIFACT_DIR: &str = "/tmp/rotten_mustard";
-const NUM_ITERATIONS: usize = 5000; // Number of batch updates
-const BATCH_SIZE: usize = 10; // Larger values generalize the gradient, finds the average value
-                              // on a larger (and therefore more predictable) plane
+const NUM_ITERATIONS: usize = 50000; // Number of batch updates
+const BATCH_SIZE: usize = 100; // Larger values generalize the gradient, finds the average value
+                               // on a larger (and therefore more predictable) plane
 const LEARNING_RATE: f64 = 0.001; // How aggressively to backpropagate
 const HIDDEN_SIZE: usize = 64; // We first set it here
 
@@ -39,12 +39,6 @@ fn main() {
         .spawn()
         .expect("Failed to spawn simulation");
 
-    // ---
-
-    let mut file = File::create("the_stats.give_a_follow").unwrap();
-
-    // ---
-
     let (_, handshake): (_, Handshake) = server.accept().unwrap();
     let tx_choice = handshake.tx_choice;
 
@@ -56,11 +50,19 @@ fn main() {
 
     // -------------------------------------------------
 
+    let mut file = File::create("the_stats.give_a_follow").unwrap();
+
+    // -------------------------------------------------
+
     type MyBackend = Autodiff<Wgpu>;
     let device = WgpuDevice::default();
 
     let mut model: Agent<MyBackend> = AgentConfig::new(HIDDEN_SIZE).init(&device);
-    // let mut optimizer = AdamConfig::new().init();
+    let mut optimizer = AdamConfig::new().init();
+
+    let noise_std_dev = 15.0; // Standard deviation
+    let normal_dist = Normal::new(0.0, noise_std_dev).unwrap();
+    let mut rng = rand::rng();
 
     for i in 0..NUM_ITERATIONS {
         let poses = generate_poses(BATCH_SIZE);
@@ -84,36 +86,67 @@ fn main() {
 
         let mus = model.forward(inputs_tensor);
 
-        let mus_reshaped = mus.reshape([BATCH_SIZE * 2, 1]);
+        let mus_reshaped = mus.clone().reshape([BATCH_SIZE * 2, 1]);
 
         let mus_vec: Vec<f32> = mus_reshaped.to_data().to_vec().unwrap();
 
+        let mut mus_vec_deviated: Vec<f32> = Vec::with_capacity(mus_vec.len() * 2);
+
+        // Add Gaussian deviation
         for i in 0..BATCH_SIZE {
-            model_choices.yaws.push(combined_inputs[i]);
-            model_choices.powers.push(combined_inputs[i + 1]);
+            let offset = i * 2;
+            let yaw_noise = normal_dist.sample(&mut rng);
+            let power_noise = normal_dist.sample(&mut rng);
+            model_choices.yaws.push(mus_vec[offset] + yaw_noise);
+            model_choices.powers.push(mus_vec[offset + 1] + power_noise);
+            mus_vec_deviated.push(mus_vec[offset] + yaw_noise);
+            mus_vec_deviated.push(mus_vec[offset + 1] + power_noise);
         }
-
-        // Currently nothing done with Gaussian whatever!
-
-        let mut rng = rand::rng();
 
         println!(
             "\n[Model] Sending Choices. Example, yaw: {:?}, power: {:?}",
             model_choices.yaws[0], model_choices.powers[0]
         );
-        println!("2nd Model Choices: {:?}", model_choices.x_vec);
         tx_choice.send(model_choices).unwrap();
 
         let rewards = rx_reward.recv().unwrap();
-        println!("[Model] Received Rewards: {:?}", rewards);
+
+        let rewards_tensor =
+            Tensor::<MyBackend, 1>::from_floats(rewards.rewards.as_slice(), &device)
+                .reshape([BATCH_SIZE, 1]);
+
+        let actions_tensor =
+            Tensor::<MyBackend, 1>::from_floats(mus_vec_deviated.as_slice(), &device)
+                .reshape([BATCH_SIZE, 2]);
+
+        // The Math: (mu - action)^2 * reward
+        // If reward is 0, loss is 0.
+        // If reward is 1, loss is MSE(mu, action).
+        // Detach actions and rewards so we don't backprop through them.
+        // .detach() removes actions_tensor from Autodiff graph
+        // The subtraction would ordinarily link the actions_tensor to being part of the Autodiff Graph?
+        // Gives a tensor with how
+        // [our predictions] - [our ___(something like deviated) predictions]
+        let diff = mus - actions_tensor.detach();
+        // Raise diff to a power. 'f' stands for float
+        let squared_error = diff.powf_scalar(2.0);
+        // Total average (mean) loss of this batch
+        let loss = (squared_error * rewards_tensor.detach()).mean();
+
+        // 5. Optimize
+        // Backward pass to get gradients
+        let grads = loss.backward();
+        // No understanding of what is happening here.
+        // Must not be important enough to be included as a step in the optimizer?
+        let grads_params = GradientsParams::from_grads(grads, &model);
+        // Apply gradient descent and update the model
+        model = optimizer.step(LEARNING_RATE, model, grads_params);
 
         println!("🎃🎃🎃🎃 Iteration: {} 🎃🎃🎃🎃", i);
 
         writeln!(file, "🎃🎃🎃🎃 Iteration: {} 🎃🎃🎃🎃", i).unwrap();
 
         writeln!(file, "{:?}", rewards.rewards).unwrap();
-
-        // thread::sleep(Duration::from_millis(1000));
     }
 
     let _ = child.wait();

@@ -15,7 +15,7 @@ use std::{
 };
 
 fn main() {
-    let headless = false;
+    let headless = true;
 
     let mut app = App::new();
 
@@ -188,14 +188,7 @@ fn run_training_loop(
         );
         let missed_reward = check_missed(&mut commands, &missed_query);
 
-        let timeout_reward = if connection.shot_frame_counter > 5000 {
-            println!("[sim] Timeout - Missed");
-            Some(Reward { reward: -0.1 })
-        } else {
-            None
-        };
-
-        if let Some(reward) = success_reward.or(missed_reward).or(timeout_reward) {
+        if let Some(reward) = success_reward.or(missed_reward) {
             connection.rewards.rewards.push(reward.reward);
             connection.index += 1;
             println!("Index increased to: {}", connection.index);
@@ -437,7 +430,7 @@ fn check_missed(
         if transform.translation.y <= BALL_RAD + 0.05 {
             println!("missed");
             commands.entity(entity).despawn();
-            return Some(Reward { reward: -1.0 });
+            return Some(Reward { reward: 0.0 });
         }
     }
     None
