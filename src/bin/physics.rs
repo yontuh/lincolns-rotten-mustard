@@ -1,3 +1,4 @@
+use bevy::app::ScheduleRunnerPlugin;
 use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
@@ -7,40 +8,48 @@ use rand::prelude::*;
 use shared::{Handshake, ModelChoice, ModelChoices, Poses, Reward, Rewards};
 use std::env;
 use std::sync::Mutex;
+use std::time::Duration;
 use std::{
     f32::consts::{FRAC_PI_2, PI},
     ops::Range,
 };
 
 fn main() {
-    App::new()
-        .init_resource::<CameraSettings>()
+    let headless = false;
+
+    let mut app = App::new();
+
+    if headless {
+        app.add_plugins(
+            MinimalPlugins.set(ScheduleRunnerPlugin::run_loop(Duration::from_secs_f64(0.0))),
+        );
+    } else {
+        app.add_plugins(DefaultPlugins)
+            .add_plugins(bevy::diagnostic::FrameTimeDiagnosticsPlugin::default())
+            .add_plugins(bevy::diagnostic::EntityCountDiagnosticsPlugin)
+            .add_plugins(bevy::diagnostic::SystemInformationDiagnosticsPlugin)
+            .add_plugins(bevy::render::diagnostic::RenderDiagnosticsPlugin)
+            .add_plugins(PerfUiPlugin)
+            .add_plugins(RapierDebugRenderPlugin::default())
+            .add_systems(Startup, setup_graphics)
+            .add_systems(FixedUpdate, move_robot)
+            .add_systems(FixedUpdate, orbit)
+            .add_systems(Update, reset_simulation);
+    }
+
+    app.init_resource::<CameraSettings>()
         .init_resource::<CameraState>()
-        .add_plugins(DefaultPlugins)
-        .add_plugins(bevy::diagnostic::FrameTimeDiagnosticsPlugin::default())
-        .add_plugins(bevy::diagnostic::EntityCountDiagnosticsPlugin)
-        .add_plugins(bevy::diagnostic::SystemInformationDiagnosticsPlugin)
-        .add_plugins(bevy::render::diagnostic::RenderDiagnosticsPlugin)
-        .add_plugins(PerfUiPlugin)
         .add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
-        .add_plugins(RapierDebugRenderPlugin::default())
-        // Calculates collisions at 60hz
         .add_systems(Startup, setup_physics_speed)
-        .add_systems(Startup, setup_graphics)
         .add_systems(Startup, setup_physics)
         .add_systems(Startup, setup_ipc)
-        .add_systems(FixedUpdate, move_robot)
-        .add_systems(FixedUpdate, orbit)
-        .add_systems(Update, reset_simulation)
         .add_systems(Update, run_training_loop)
         .run();
 }
 
 fn setup_physics_speed(mut timestep_mode: ResMut<TimestepMode>) {
-    *timestep_mode = TimestepMode::Variable {
-        max_dt: 1.0 / 60.0,
-        time_scale: 100.0,
-        // time_scale: 0.1,
+    *timestep_mode = TimestepMode::Fixed {
+        dt: 1.0 / 60.0,
         substeps: 1,
     };
 }
@@ -61,9 +70,7 @@ fn setup_ipc(mut commands: Commands) {
         })
         .unwrap();
 
-    println!("[Simulation] Waiting for back channel...");
     let tx_reward = rx_back_channel.recv().unwrap();
-    println!("[Simulation] Connected.");
 
     commands.insert_resource(TrainingConnection {
         rx_choices: Mutex::new(rx_choice),
@@ -115,7 +122,7 @@ fn run_training_loop(
                 connection.pending_z_pos[connection.index],
             );
             println!(
-                "[Simulation] Executing Choice - Rotation: {:.2}, Power: {:.2} at Position: {}, {}",
+                "[sim] Choice - Rotation: {:.2}, Power: {:.2} at Position: {}, {}",
                 connection.pending_yaws[connection.index],
                 connection.pending_powers[connection.index],
                 transform.translation.x,
@@ -136,7 +143,7 @@ fn run_training_loop(
         match received {
             Ok(choices) => {
                 println!(
-                    "[Simulation] Received {:?} choices. Example yaws: {:?}, power: {:?} ",
+                    "[sim] Received {:?} choices. Example yaws: {:?}, power: {:?} ",
                     choices.yaws.len(),
                     choices.yaws[0],
                     choices.powers[0]
@@ -182,7 +189,7 @@ fn run_training_loop(
         let missed_reward = check_missed(&mut commands, &missed_query);
 
         let timeout_reward = if connection.shot_frame_counter > 5000 {
-            println!("[Simulation] Timeout - Missed");
+            println!("[sim] Timeout - Missed");
             Some(Reward { reward: -0.1 })
         } else {
             None
@@ -193,7 +200,7 @@ fn run_training_loop(
             connection.index += 1;
             println!("Index increased to: {}", connection.index);
             if connection.rewards.rewards.len() == connection.batch_size.unwrap() {
-                println!("[Simulation] Sending Reward: {:?}", reward);
+                println!("[sim] Sending Reward: {:?}", reward);
                 // Replaces connection's rewards with Rewards{rewards: Vec::new()}
                 // and returns the value that was previously in connection's rewards.
                 let rewards_to_send = std::mem::replace(
