@@ -39,7 +39,7 @@ fn main() {
 fn setup_physics_speed(mut timestep_mode: ResMut<TimestepMode>) {
     *timestep_mode = TimestepMode::Variable {
         max_dt: 1.0 / 60.0,
-        time_scale: 1.0,
+        time_scale: 50.0,
         // time_scale: 0.1,
         substeps: 1,
     };
@@ -361,6 +361,7 @@ fn spawn_robot_objects(pos: Transform, commands: &mut Commands) {
                 snozzle_pow: 6.5, // m/s,
                 stiffness: 0.5,
             },
+            CollisionGroups::new(Group::GROUP_1, Group::ALL ^ Group::GROUP_2),
         ))
         .insert((PhysicsObject, DebugObject, ShouldReset));
 }
@@ -541,7 +542,6 @@ fn reset_with_pos(
     for entity in query {
         commands.entity(entity).despawn();
     }
-    spawn_arena_objects(commands);
 
     // Feet!
     if x_feet > 3.0 && z_feet > 3.0 {
@@ -623,6 +623,7 @@ struct BallBundle {
     transform: Transform,
     ball: Ball,
     resettable: ShouldReset,
+    collision_groups: CollisionGroups,
 }
 
 impl BallBundle {
@@ -647,6 +648,7 @@ impl BallBundle {
             transform: Transform::from_translation(position),
             ball: Ball,
             resettable: ShouldReset,
+            collision_groups: CollisionGroups::new(Group::GROUP_2, Group::ALL ^ Group::GROUP_1),
         }
     }
 }

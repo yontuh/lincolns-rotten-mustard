@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 bevy = {version = "0.16.1", features = ["dynamic_linking", "wayland"]}
-bevy_rapier3d = { version = "0.31.0", features = ["simd-stable", "debug-render-3d"]}
+bevy_rapier3d = { version = "0.31.0", features = ["simd-stable", "debug-render-3d", "parallel"]}
 iyes_perf_ui = "0.5.0"
 
 rand = "0.9.2"
@@ -21,6 +21,11 @@ opt-level = 0
 
 [profile.dev.package."*"]
 opt-level = 3
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+lto = "fat"
 
 [lib]
 name = "shared"

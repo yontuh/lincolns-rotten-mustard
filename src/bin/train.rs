@@ -24,7 +24,15 @@ fn main() {
     println!("[Model] IPC Server started. Spawning simulation...");
 
     let mut child = Command::new("cargo")
-        .args(["run", "--quiet", "--bin", "physics", "--", &server_name])
+        .args([
+            "run",
+            "--quiet",
+            "--release",
+            "--bin",
+            "physics",
+            "--",
+            &server_name,
+        ])
         .spawn()
         .expect("Failed to spawn simulation");
 
@@ -45,7 +53,7 @@ fn main() {
     let mut model: Agent<MyBackend> = AgentConfig::new(HIDDEN_SIZE).init(&device);
     // let mut optimizer = AdamConfig::new().init();
 
-    for _i in 0..NUM_ITERATIONS {
+    for i in 0..NUM_ITERATIONS {
         let poses = generate_poses(BATCH_SIZE);
         let mut model_choices: ModelChoices = ModelChoices {
             yaws: Vec::with_capacity(BATCH_SIZE),
@@ -89,6 +97,8 @@ fn main() {
 
         let reward = rx_reward.recv().unwrap();
         println!("[Model] Received Reward: {:?}", reward);
+
+        println!("🎃🎃🎃🎃 Iteration: {} 🎃🎃🎃🎃", i);
 
         // thread::sleep(Duration::from_millis(1000));
     }
