@@ -13,8 +13,12 @@ use std::{
     ops::Range,
 };
 
+const NUM_ARENAS: usize = 64;
+
+const ARENA_SPACING: f32 = 50.0;
+
 fn main() {
-    let headless = true;
+    let headless = false;
 
     let mut app = App::new();
 
@@ -32,8 +36,7 @@ fn main() {
             .add_plugins(RapierDebugRenderPlugin::default())
             .add_systems(Startup, setup_graphics)
             .add_systems(FixedUpdate, move_robot)
-            .add_systems(FixedUpdate, orbit)
-            .add_systems(FixedUpdate, reset_simulation);
+            .add_systems(FixedUpdate, orbit);
     }
 
     app.init_resource::<CameraSettings>()
@@ -94,7 +97,7 @@ fn setup_ipc(mut commands: Commands) {
 fn run_training_loop(
     mut commands: Commands,
     mut connection: ResMut<TrainingConnection>,
-    mut take_out_query: Query<(&mut Transform, &mut RobotObject), Without<Ball>>,
+    mut take_out_query: Query<(&mut Transform, &mut RobotObject, &ArenaIndex), Without<Ball>>,
     mut collision_events: EventReader<CollisionEvent>,
     reset_query: Query<Entity, With<ShouldReset>>,
     goal_query: Query<&GoalObject>,
@@ -102,21 +105,24 @@ fn run_training_loop(
     missed_query: Query<(Entity, &Transform), With<Ball>>,
 ) {
     if connection.pending_launch {
-        take_out(
-            &mut commands,
-            &mut take_out_query,
-            connection.pending_yaws[connection.index],
-            connection.pending_powers[connection.index],
-        );
+        for (transform, _, arena_index) in take_out_query.iter() {
+            take_out(
+                &mut commands,
+                &mut take_out_query,
+                connection.pending_yaws[connection.index],
+                connection.pending_powers[connection.index],
+            );
+        }
         connection.pending_launch = false;
     }
 
     // Setup the Arena
     if connection.pending_setup {
-        if let Ok((transform, _)) = take_out_query.single() {
+        if let Ok((transform, _, arena_index)) = take_out_query.single() {
             reset_with_pos(
                 &mut commands,
                 &reset_query,
+                arena_index.0,
                 connection.pending_x_pos[connection.index],
                 connection.pending_z_pos[connection.index],
             );
@@ -235,77 +241,90 @@ const BALL_WEIGHT: f32 = 0.165 * POUNDS_TO_KILOGRAMS;
 
 const GOAL_HEIGHT: f32 = 0.9845;
 
-fn spawn_arena_objects(commands: &mut Commands) {
+fn spawn_arena_objects(commands: &mut Commands, offset: Vec3) {
+    let transform_input = Vec3::new(0.0, -0.001, 0.0) + offset;
     commands.spawn((
         Collider::cuboid(WALL_LENGTH / 2.0, 0.001, WALL_LENGTH / 2.0),
-        Transform::from_xyz(0.0, -0.001, 0.0),
+        Transform::from_xyz(transform_input.x, transform_input.y, transform_input.z),
         PhysicsObject,
     ));
+
+    let transform_input = Vec3::new(WALL_LENGTH / 2.0, WALL_HEIGHT / 2.0, 0.0) + offset;
 
     commands.spawn((
         Collider::cuboid(0.001, WALL_HEIGHT / 2.0, WALL_LENGTH / 2.0),
-        Transform::from_xyz(WALL_LENGTH / 2.0, WALL_HEIGHT / 2.0, 0.0),
+        Transform::from_xyz(transform_input.x, transform_input.y, transform_input.z),
         PhysicsObject,
     ));
 
+    let transform_input = Vec3::new(-WALL_LENGTH / 2.0, WALL_HEIGHT / 2.0, 0.0) + offset;
     commands.spawn((
         Collider::cuboid(0.001, WALL_HEIGHT / 2.0, WALL_LENGTH / 2.0),
-        Transform::from_xyz(-WALL_LENGTH / 2.0, WALL_HEIGHT / 2.0, 0.0),
+        Transform::from_xyz(transform_input.x, transform_input.y, transform_input.z),
         PhysicsObject,
     ));
 
+    let transform_input = Vec3::new(0.0, WALL_HEIGHT / 2.0, WALL_LENGTH / 2.0) + offset;
     commands.spawn((
         Collider::cuboid(WALL_LENGTH / 2.0, WALL_HEIGHT / 2.0, 0.001),
-        Transform::from_xyz(0.0, WALL_HEIGHT / 2.0, WALL_LENGTH / 2.0),
+        Transform::from_xyz(transform_input.x, transform_input.y, transform_input.z),
         PhysicsObject,
     ));
 
+    let transform_input = Vec3::new(0.0, WALL_HEIGHT / 2.0, -WALL_LENGTH / 2.0) + offset;
+
     commands.spawn((
         Collider::cuboid(WALL_LENGTH / 2.0, WALL_HEIGHT / 2.0, 0.001),
-        Transform::from_xyz(0.0, WALL_HEIGHT / 2.0, -WALL_LENGTH / 2.0),
+        Transform::from_xyz(transform_input.x, transform_input.y, transform_input.z),
         PhysicsObject,
     ));
+
+    let transform_input = Vec3::new(1.479, GOAL_HEIGHT / 2.0, 1.479) + offset;
 
     commands.spawn((
         Collider::cuboid(0.495, GOAL_HEIGHT / 2.0, 0.001),
-        Transform::from_xyz(1.479, GOAL_HEIGHT / 2.0, 1.479).with_rotation(Quat::from_euler(
-            EulerRot::YXZ,
-            PI / 4.0,
-            0.0,
-            0.0,
-        )),
+        Transform::from_xyz(transform_input.x, transform_input.y, transform_input.z)
+            .with_rotation(Quat::from_euler(EulerRot::YXZ, PI / 4.0, 0.0, 0.0)),
+        PhysicsObject,
+    ));
+    let transform_input = Vec3::new(
+        (WALL_LENGTH / 2.0) - 0.35,
+        GOAL_HEIGHT / 2.0,
+        WALL_LENGTH / 2.0,
+    ) + offset;
+    commands.spawn((
+        Collider::cuboid(0.35, GOAL_HEIGHT / 2.0, 0.001),
+        Transform::from_xyz(transform_input.x, transform_input.y, transform_input.z),
         PhysicsObject,
     ));
 
-    commands.spawn((
-        Collider::cuboid(0.35, GOAL_HEIGHT / 2.0, 0.001),
-        Transform::from_xyz(
-            (WALL_LENGTH / 2.0) - 0.35,
-            GOAL_HEIGHT / 2.0,
-            WALL_LENGTH / 2.0,
-        ),
-        PhysicsObject,
-    ));
+    let transform_input =
+        Vec3::new((WALL_LENGTH / 2.0) - 0.7, GOAL_HEIGHT, WALL_LENGTH / 2.0) + offset;
 
     commands.spawn((
         Collider::triangle(
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(0.70, 0.0, 0.0),
-            Vec3::new(0.70, 0.375, 0.0),
+            Vec3::new(0.0, 0.0, 0.0) + offset,
+            Vec3::new(0.70, 0.0, 0.0) + offset,
+            Vec3::new(0.70, 0.375, 0.0) + offset,
         ),
-        Transform::from_xyz((WALL_LENGTH / 2.0) - 0.7, GOAL_HEIGHT, WALL_LENGTH / 2.0),
+        Transform::from_xyz(transform_input.x, transform_input.y, transform_input.z),
         PhysicsObject,
     ));
 
+    let transform_input = Vec3::new(
+        WALL_LENGTH / 2.0,
+        GOAL_HEIGHT / 2.0,
+        (WALL_LENGTH / 2.0) - 0.35,
+    ) + offset;
+
     commands.spawn((
         Collider::cuboid(0.001, GOAL_HEIGHT / 2.0, 0.35),
-        Transform::from_xyz(
-            WALL_LENGTH / 2.0,
-            GOAL_HEIGHT / 2.0,
-            (WALL_LENGTH / 2.0) - 0.35,
-        ),
+        Transform::from_xyz(transform_input.x, transform_input.y, transform_input.z),
         PhysicsObject,
     ));
+
+    let transform_input =
+        Vec3::new(WALL_LENGTH / 2.0, GOAL_HEIGHT, (WALL_LENGTH / 2.0) - 0.7) + offset;
 
     commands.spawn((
         Collider::triangle(
@@ -313,9 +332,15 @@ fn spawn_arena_objects(commands: &mut Commands) {
             Vec3::new(0.0, 0.0, 0.70),
             Vec3::new(0.0, 0.375, 0.70),
         ),
-        Transform::from_xyz(WALL_LENGTH / 2.0, GOAL_HEIGHT, (WALL_LENGTH / 2.0) - 0.7),
+        Transform::from_xyz(transform_input.x, transform_input.y, transform_input.z),
         PhysicsObject,
     ));
+
+    let transform_input = Vec3::new(
+        WALL_LENGTH / 2.0,
+        GOAL_HEIGHT - 0.2,
+        (WALL_LENGTH / 2.0) - 0.7,
+    ) + offset;
 
     commands.spawn((
         Sensor,
@@ -325,16 +350,12 @@ fn spawn_arena_objects(commands: &mut Commands) {
             Vec3::new(0.0, 0.0, 0.7),
             Vec3::new(-0.7, 0.0, 0.7),
         ),
-        Transform::from_xyz(
-            WALL_LENGTH / 2.0,
-            GOAL_HEIGHT - 0.2,
-            (WALL_LENGTH / 2.0) - 0.7,
-        ),
+        Transform::from_xyz(transform_input.x, transform_input.y, transform_input.z),
         GoalObject,
     ));
 }
 
-fn spawn_robot_objects(pos: Transform, commands: &mut Commands) {
+fn spawn_robot_objects(pos: Transform, arena: usize, commands: &mut Commands) {
     // Robot
     commands
         .spawn((
@@ -360,6 +381,7 @@ fn spawn_robot_objects(pos: Transform, commands: &mut Commands) {
                 snozzle_pow: 6.5, // m/s,
                 stiffness: 0.5,
             },
+            ArenaIndex(arena),
             CollisionGroups::new(Group::GROUP_1, Group::ALL ^ Group::GROUP_2),
         ))
         .insert((PhysicsObject, DebugObject, ShouldReset));
@@ -367,11 +389,11 @@ fn spawn_robot_objects(pos: Transform, commands: &mut Commands) {
 
 fn take_out(
     commands: &mut Commands,
-    query: &mut Query<(&mut Transform, &mut RobotObject), Without<Ball>>,
+    query: &mut Query<(&mut Transform, &mut RobotObject, &ArenaIndex), Without<Ball>>,
     yaw: f32,
     power: f32,
 ) {
-    for (mut transform, mut robot) in query {
+    for (mut transform, mut robot, arena) in query {
         let adjusted_power = power + 7.0;
 
         robot.snozzle_pow = adjusted_power;
@@ -391,7 +413,7 @@ fn take_out(
 
         let spawn_pos = transform.translation + (Vec3::Y * ROBOT_HEIGHT);
 
-        commands.spawn(BallBundle::new(spawn_pos, shoot_velocity));
+        commands.spawn(BallBundle::new(spawn_pos, shoot_velocity, arena.0));
     }
 }
 
@@ -490,33 +512,10 @@ fn move_robot(
     }
 }
 
-fn reset_simulation(
-    mut commands: Commands,
-    keys: Res<ButtonInput<KeyCode>>,
-    query: Query<Entity, With<PhysicsObject>>,
-) {
-    if keys.just_pressed(KeyCode::KeyR) {
-        for entity in &query {
-            commands.entity(entity).despawn();
-        }
-
-        spawn_arena_objects(&mut commands);
-
-        spawn_robot_objects(
-            Transform::from_xyz(0.0, 0.101, 0.0).with_rotation(Quat::from_euler(
-                EulerRot::YXZ,
-                PI / 4.0,
-                0.0,
-                0.0,
-            )),
-            &mut commands,
-        );
-    }
-}
-
 fn reset_with_pos(
     commands: &mut Commands,
     query: &Query<Entity, With<ShouldReset>>,
+    arena_index: usize,
     x_feet: f32,
     z_feet: f32,
 ) {
@@ -533,8 +532,11 @@ fn reset_with_pos(
     let spawn_pos = Transform::from_xyz(x_feet * FTM, y, z_feet * FTM)
         .with_rotation(Quat::from_euler(EulerRot::YXZ, 0.0, 0.0, 0.0));
 
-    spawn_robot_objects(spawn_pos, commands);
+    spawn_robot_objects(spawn_pos, arena_index, commands);
 }
+
+#[derive(Component)]
+struct ArenaIndex(usize);
 
 #[derive(Component)]
 struct ShouldReset;
@@ -578,10 +580,11 @@ struct BallBundle {
     ball: Ball,
     resettable: ShouldReset,
     collision_groups: CollisionGroups,
+    arena: ArenaIndex,
 }
 
 impl BallBundle {
-    fn new(position: Vec3, linear_velocity: Vec3) -> Self {
+    fn new(position: Vec3, linear_velocity: Vec3, arena: usize) -> Self {
         Self {
             rigid_body: RigidBody::Dynamic,
             velocity: Velocity {
@@ -603,6 +606,7 @@ impl BallBundle {
             ball: Ball,
             resettable: ShouldReset,
             collision_groups: CollisionGroups::new(Group::GROUP_2, Group::ALL ^ Group::GROUP_1),
+            arena: ArenaIndex(arena),
         }
     }
 }
@@ -643,16 +647,18 @@ fn setup_graphics(mut commands: Commands, camera_settings: Res<CameraSettings>) 
 }
 
 fn setup_physics(mut commands: Commands) {
-    spawn_arena_objects(&mut commands);
-    spawn_robot_objects(
-        Transform::from_xyz(0.0, 0.101, 0.0).with_rotation(Quat::from_euler(
-            EulerRot::YXZ,
-            PI / 4.0,
-            0.0,
-            0.0,
-        )),
-        &mut commands,
-    );
+    for arena_index in 0..NUM_ARENAS {
+        let offset = Vec3::new(0.0, 0.0, (arena_index as f32) * ARENA_SPACING);
+        spawn_arena_objects(&mut commands, offset);
+
+        spawn_robot_objects(
+            Transform::from_xyz(0.0, 0.101, 0.0)
+                .with_rotation(Quat::from_euler(EulerRot::YXZ, PI / 4.0, 0.0, 0.0))
+                .with_translation(offset + Vec3::new(0.0, 0.101, 0.0)),
+            arena_index,
+            &mut commands,
+        );
+    }
 }
 impl Default for CameraSettings {
     fn default() -> Self {

@@ -16,9 +16,9 @@ use std::fs::File;
 use std::io::Write;
 
 const ARTIFACT_DIR: &str = "/tmp/rotten_mustard";
-const NUM_ITERATIONS: usize = 50000; // Number of batch updates
-const BATCH_SIZE: usize = 100; // Larger values generalize the gradient, finds the average value
-                               // on a larger (and therefore more predictable) plane
+const NUM_ITERATIONS: usize = 5000; // Number of batch updates
+const BATCH_SIZE: usize = 64; // Larger values generalize the gradient, finds the average value
+                              // on a larger (and therefore more predictable) plane
 const LEARNING_RATE: f64 = 0.001; // How aggressively to backpropagate
 const HIDDEN_SIZE: usize = 64; // We first set it here
 
