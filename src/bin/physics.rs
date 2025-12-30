@@ -86,9 +86,8 @@ fn setup_ipc(mut commands: Commands) {
         pending_x_pos: Vec::new(),
         pending_z_pos: Vec::new(),
         shot_frame_counter: 0,
-        rewards: Rewards {
-            rewards: Vec::new(),
-        },
+        collected_rewards: Vec::new(),
+        finished_count: 0,
         batch_size: None,
     });
     println!("Done with IPC setup");
@@ -101,42 +100,34 @@ fn run_training_loop(
     mut collision_events: EventReader<CollisionEvent>,
     reset_query: Query<Entity, With<ShouldReset>>,
     goal_query: Query<&GoalObject>,
-    ball_query: Query<Entity, With<Ball>>,
-    missed_query: Query<(Entity, &Transform), With<Ball>>,
+    ball_query: Query<(Entity, &ArenaIndex), With<Ball>>,
+    missed_query: Query<(Entity, &Transform, &ArenaIndex), With<Ball>>,
 ) {
     if connection.pending_launch {
-        for (transform, _, arena_index) in take_out_query.iter() {
-            take_out(
-                &mut commands,
-                &mut take_out_query,
-                connection.pending_yaws[connection.index],
-                connection.pending_powers[connection.index],
-            );
-        }
+        take_out(
+            &mut commands,
+            &mut take_out_query,
+            &connection.pending_yaws,
+            &connection.pending_powers,
+        );
         connection.pending_launch = false;
+        connection.waiting_for_result = true;
     }
 
     // Setup the Arena
     if connection.pending_setup {
-        if let Ok((transform, _, arena_index)) = take_out_query.single() {
-            reset_with_pos(
-                &mut commands,
-                &reset_query,
-                arena_index.0,
-                connection.pending_x_pos[connection.index],
-                connection.pending_z_pos[connection.index],
-            );
-            println!(
-                "[sim] Choice - Rotation: {:.2}, Power: {:.2} at Position: {}, {}",
-                connection.pending_yaws[connection.index],
-                connection.pending_powers[connection.index],
-                transform.translation.x,
-                transform.translation.z
-            );
-        }
-        connection.pending_launch = true;
+        reset_with_pos(
+            &mut commands,
+            &reset_query,
+            &connection.pending_x_pos,
+            &connection.pending_z_pos,
+        );
+        println!(
+            "[sim] Batch setup complete for {} agents",
+            connection.batch_size.unwrap()
+        );
         connection.pending_setup = false;
-        connection.waiting_for_result = true;
+        connection.pending_launch = true;
         return;
     }
 
@@ -154,26 +145,24 @@ fn run_training_loop(
                     choices.powers[0]
                 );
 
-                println!("Recieved Choices: {:?}", choices.x_vec);
+                // println!("Recieved Choices: {:?}", choices.x_vec);
+                let batch_size = choices.yaws.len();
 
-                connection.pending_yaws = Vec::new();
-                connection.pending_powers = Vec::new();
-                connection.pending_x_pos = Vec::new();
-                connection.pending_z_pos = Vec::new();
+                connection.pending_yaws = choices.yaws;
+                connection.pending_powers = choices.powers;
+                connection.pending_x_pos = choices.x_vec;
+                connection.pending_z_pos = choices.z_vec;
 
                 // Rewards is reset in the else clause
 
-                for i in 0..choices.yaws.len() {
-                    // reset_with_random_pos(&mut commands, &reset_query);
+                // println!("Pending_x_poses: {:?}", connection.pending_x_pos);
 
-                    connection.pending_yaws.push(choices.yaws[i]);
-                    connection.pending_powers.push(choices.powers[i]);
-                    connection.pending_x_pos.push(choices.x_vec[i]);
-                    connection.pending_z_pos.push(choices.z_vec[i]);
-                }
-                println!("Pending_x_poses: {:?}", connection.pending_x_pos);
+                // [None, None, None, ...]
+                connection.collected_rewards = vec![None; batch_size];
+                connection.finished_count = 0;
+
                 connection.pending_setup = true;
-                connection.batch_size = Some(choices.yaws.len());
+                connection.batch_size = Some(batch_size);
 
                 connection.shot_frame_counter = 0;
 
@@ -185,37 +174,52 @@ fn run_training_loop(
     } else {
         connection.shot_frame_counter += 1;
 
-        let success_reward = check_success(
+        let successes = check_success(
             &mut commands,
             &mut collision_events,
             &goal_query,
             &ball_query,
         );
-        let missed_reward = check_missed(&mut commands, &missed_query);
+        for (idx, reward) in successes {
+            if idx < connection.collected_rewards.len()
+                && connection.collected_rewards[idx].is_none()
+            {
+                connection.collected_rewards[idx] = Some(reward);
+                connection.finished_count += 1;
+            }
+        }
 
-        if let Some(reward) = success_reward.or(missed_reward) {
-            connection.rewards.rewards.push(reward.reward);
-            connection.index += 1;
-            println!("Index increased to: {}", connection.index);
-            if connection.rewards.rewards.len() == connection.batch_size.unwrap() {
-                println!("[sim] Sending Reward: {:?}", reward);
-                // Replaces connection's rewards with Rewards{rewards: Vec::new()}
-                // and returns the value that was previously in connection's rewards.
-                let rewards_to_send = std::mem::replace(
-                    &mut connection.rewards,
-                    Rewards {
-                        rewards: Vec::new(),
-                    },
-                );
+        let misses = check_missed(&mut commands, &missed_query);
+        for (idx, reward) in misses {
+            if idx < connection.collected_rewards.len()
+                && connection.collected_rewards[idx].is_none()
+            {
+                connection.collected_rewards[idx] = Some(reward);
+                connection.finished_count += 1;
+            }
+        }
+
+        if let Some(batch_size) = connection.batch_size {
+            if connection.finished_count >= batch_size {
+                let final_rewards: Vec<f32> = connection
+                    // Vec<Option<f32>>
+                    .collected_rewards
+                    .iter()
+                    .map(|r| r.unwrap_or(0.0))
+                    .collect();
+
+                println!("[sim] Sending {} Rewards", final_rewards.len());
+
                 connection
                     .tx_reward
                     .lock()
                     .unwrap()
-                    .send(rewards_to_send)
+                    .send(Rewards {
+                        rewards: final_rewards,
+                    })
                     .unwrap();
+
                 connection.waiting_for_result = false;
-            } else {
-                connection.pending_setup = true;
             }
         }
     }
@@ -390,10 +394,18 @@ fn spawn_robot_objects(pos: Transform, arena: usize, commands: &mut Commands) {
 fn take_out(
     commands: &mut Commands,
     query: &mut Query<(&mut Transform, &mut RobotObject, &ArenaIndex), Without<Ball>>,
-    yaw: f32,
-    power: f32,
+    yaws: &Vec<f32>,
+    powers: &Vec<f32>,
 ) {
     for (mut transform, mut robot, arena) in query {
+        let idx = arena.0;
+        if idx >= yaws.len() {
+            continue;
+        }
+
+        let yaw = yaws[idx];
+        let power = powers[idx];
+
         let adjusted_power = power + 7.0;
 
         robot.snozzle_pow = adjusted_power;
@@ -421,44 +433,43 @@ fn check_success(
     commands: &mut Commands,
     collision_events: &mut EventReader<CollisionEvent>,
     goal_query: &Query<&GoalObject>,
-    ball_query: &Query<Entity, With<Ball>>,
-) -> Option<Reward> {
-    for event in collision_events.read() {
-        match event {
-            CollisionEvent::Started(entity1, entity2, _flags) => {
-                let ball_entity = if goal_query.contains(*entity1) && ball_query.contains(*entity2)
-                {
-                    Some(*entity2)
-                } else if goal_query.contains(*entity2) && ball_query.contains(*entity1) {
-                    Some(*entity1)
-                } else {
-                    None
-                };
+    ball_query: &Query<(Entity, &ArenaIndex), With<Ball>>,
+) -> Vec<(usize, f32)> {
+    let mut results = Vec::new();
 
-                if let Some(entity) = ball_entity {
-                    println!("✅ goaled ✅✅✅✅✅✅✅");
-                    commands.entity(entity).despawn();
-                    return Some(Reward { reward: 1.0 });
-                }
+    for event in collision_events.read() {
+        if let CollisionEvent::Started(e1, e2, _) = event {
+            let ball_info = if goal_query.contains(*e1) {
+                ball_query.get(*e2).ok()
+            } else if goal_query.contains(*e2) {
+                ball_query.get(*e1).ok()
+            } else {
+                None
+            };
+
+            if let Some((entity, arena)) = ball_info {
+                commands.entity(entity).despawn();
+                results.push((arena.0, 1.0));
+                println!("✅ goaled ✅✅✅✅✅✅✅");
             }
-            _ => {}
         }
     }
-    None
+    results
 }
 
 fn check_missed(
     commands: &mut Commands,
-    query: &Query<(Entity, &Transform), With<Ball>>,
-) -> Option<Reward> {
-    for (entity, transform) in query {
+    query: &Query<(Entity, &Transform, &ArenaIndex), With<Ball>>,
+) -> Vec<(usize, f32)> {
+    let mut results = Vec::new();
+    for (entity, transform, arena) in query {
         if transform.translation.y <= BALL_RAD + 0.05 {
             println!("♈♈ missed ♈♈");
             commands.entity(entity).despawn();
-            return Some(Reward { reward: 0.0 });
+            results.push((arena.0, 0.0));
         }
     }
-    None
+    results
 }
 
 fn move_robot(
@@ -515,24 +526,30 @@ fn move_robot(
 fn reset_with_pos(
     commands: &mut Commands,
     query: &Query<Entity, With<ShouldReset>>,
-    arena_index: usize,
-    x_feet: f32,
-    z_feet: f32,
+    x_pos: &Vec<f32>,
+    z_pos: &Vec<f32>,
 ) {
     for entity in query {
         commands.entity(entity).despawn();
     }
 
-    // Feet!
-    if x_feet > 3.0 && z_feet > 3.0 {
-        println!("Something has gone wrong, reset_with_pos()");
-    }
     let y = (ROBOT_HEIGHT / 2.0) + 0.0001;
 
-    let spawn_pos = Transform::from_xyz(x_feet * FTM, y, z_feet * FTM)
-        .with_rotation(Quat::from_euler(EulerRot::YXZ, 0.0, 0.0, 0.0));
+    let count = x_pos.len().min(NUM_ARENAS);
 
-    spawn_robot_objects(spawn_pos, arena_index, commands);
+    for index in 0..count {
+        let x_feet = x_pos[index];
+        let z_feet = z_pos[index];
+
+        let arena_offset = Vec3::new(0.0, 0.0, (index as f32) * ARENA_SPACING);
+
+        // Feet!
+        let spawn_pos =
+            Transform::from_translation(arena_offset + Vec3::new(x_feet * FTM, y, z_feet * FTM))
+                .with_rotation(Quat::from_euler(EulerRot::YXZ, 0.0, 0.0, 0.0));
+
+        spawn_robot_objects(spawn_pos, index, commands);
+    }
 }
 
 #[derive(Component)]
@@ -633,7 +650,8 @@ struct TrainingConnection {
     pending_x_pos: Vec<f32>,
     pending_z_pos: Vec<f32>,
     shot_frame_counter: usize,
-    rewards: Rewards,
+    collected_rewards: Vec<Option<f32>>,
+    finished_count: usize,
     batch_size: Option<usize>,
 }
 

@@ -16,6 +16,18 @@ use std::thread;
 use std::time::Duration;
 
 fn main() {
+    type MyBackend = Wgpu;
+    let device = WgpuDevice::default();
+    let artifact_dir = "/tmp/rotten_mustard";
+
+    // Load Config and Model
+    let config =
+        AgentConfig::load(format!("{}/config.json", artifact_dir)).expect("Run training first");
+    let record = CompactRecorder::new()
+        .load(format!("{}/model", artifact_dir).into(), &device)
+        .expect("Run training first");
+    let model: Agent<MyBackend> = config.init(&device).load_record(record);
+
     let (server, server_name) = IpcOneShotServer::new().unwrap();
     println!("[Model] IPC Server started. Spawning simulation...");
 
@@ -34,18 +46,6 @@ fn main() {
     println!("[Model] Handshake complete.");
 
     thread::sleep(Duration::from_millis(200));
-
-    type MyBackend = Wgpu;
-    let device = WgpuDevice::default();
-    let artifact_dir = "/tmp/rotten_mustard";
-
-    // Load Config and Model
-    let config =
-        AgentConfig::load(format!("{}/config.json", artifact_dir)).expect("Run training first");
-    let record = CompactRecorder::new()
-        .load(format!("{}/model", artifact_dir).into(), &device)
-        .expect("Run training first");
-    let model: Agent<MyBackend> = config.init(&device).load_record(record);
 
     loop {
         print!("\nx value:");
@@ -78,7 +78,10 @@ fn main() {
                 model_choices.x_vec.push(choice);
                 combined_vec.push(choice);
             }
-            Err(_) => println!("Invalid number"),
+            Err(_) => {
+                println!("Invalid number");
+                let _ = child.wait();
+            }
         }
 
         match z_choice.parse::<f32>() {
@@ -86,19 +89,24 @@ fn main() {
                 model_choices.z_vec.push(choice);
                 combined_vec.push(choice);
             }
-            Err(_) => println!("Invalid number"),
+            Err(_) => {
+                println!("Invalid number");
+                let _ = child.wait();
+            }
         }
 
         let choices_tensor =
-            Tensor::<MyBackend, 1>::from_floats(combined_vec.as_slice(), &device).reshape([2, 1]);
+            Tensor::<MyBackend, 1>::from_floats(combined_vec.as_slice(), &device).reshape([1, 2]);
 
         let choices = model.forward(choices_tensor);
 
         let choices_vec: Vec<f32> = choices.to_data().to_vec().unwrap();
 
-        model_choices.x_vec.push(choices_vec[0]);
+        println!("Choice: {:?}", choices_vec);
 
-        model_choices.z_vec.push(choices_vec[1]);
+        model_choices.yaws.push(choices_vec[0]);
+
+        model_choices.powers.push(choices_vec[1]);
 
         tx_choice.send(model_choices).unwrap();
 

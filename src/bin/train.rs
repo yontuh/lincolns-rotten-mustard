@@ -124,9 +124,9 @@ fn main() {
         // If reward is 1, loss is MSE(mu, action).
         // Detach actions and rewards so we don't backprop through them.
         // .detach() removes actions_tensor from Autodiff graph
-        // The subtraction would ordinarily link the actions_tensor to being part of the Autodiff Graph?
+        // The subtraction would ordinarily link the actions_tensor to being part of the Autodiff Graph
         // Gives a tensor with how
-        // [our predictions] - [our ___(something like deviated) predictions]
+        // [our predictions] - [our deviated predictions]
         let diff = mus - actions_tensor.detach();
         // Raise diff to a power. 'f' stands for float
         let squared_error = diff.powf_scalar(2.0);
