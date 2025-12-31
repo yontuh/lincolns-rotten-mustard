@@ -15,7 +15,7 @@ use std::{
     ops::Range,
 };
 
-const NUM_ARENAS: usize = 64;
+const NUM_ARENAS: usize = 32;
 
 const ARENA_SPACING: f32 = 50.0;
 

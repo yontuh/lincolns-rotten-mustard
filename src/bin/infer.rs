@@ -7,7 +7,7 @@ use std::io::{self, Write};
 use burn::{
     backend::{wgpu::WgpuDevice, Wgpu},
     prelude::*,
-    record::{CompactRecorder, Recorder},
+    record::{BinFileRecorder, FullPrecisionSettings, Recorder},
 };
 
 use shared::{Agent, AgentConfig};
@@ -23,7 +23,7 @@ fn main() {
     // Load Config and Model
     let config =
         AgentConfig::load(format!("{}/config.json", artifact_dir)).expect("Run training first");
-    let record = CompactRecorder::new()
+    let record = BinFileRecorder::<FullPrecisionSettings>::new()
         .load(format!("{}/model", artifact_dir).into(), &device)
         .expect("Run training first");
     let model: Agent<MyBackend> = config.init(&device).load_record(record);
