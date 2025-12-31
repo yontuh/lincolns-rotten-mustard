@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
 use ipc_channel::ipc::{self, IpcSender};
 use iyes_perf_ui::prelude::*;
-use shared::{Handshake, ModelChoices, Reward, Rewards};
+use shared::{Handshake, ModelChoices, Rewards};
 use std::env;
 use std::sync::Mutex;
 use std::time::Duration;

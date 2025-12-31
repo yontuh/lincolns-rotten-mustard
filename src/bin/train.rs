@@ -7,7 +7,7 @@ use burn::{
     backend::{wgpu::WgpuDevice, Autodiff, Wgpu},
     optim::{AdamConfig, GradientsParams, Optimizer},
     prelude::*,
-    record::CompactRecorder,
+    record::{BinFileRecorder, FullPrecisionSettings},
 };
 use rand_distr::{Distribution, Normal};
 use shared::{Agent, AgentConfig};
@@ -156,7 +156,11 @@ fn main() {
     .save(format!("{}/config.json", ARTIFACT_DIR))
     .unwrap();
     model
-        .save_file(format!("{}/model", ARTIFACT_DIR), &CompactRecorder::new())
+        .save_file(
+            format!("{}/model", ARTIFACT_DIR),
+            // Can also do HalfPrecisionSettings and DoublePrecisionSettings
+            &BinFileRecorder::<FullPrecisionSettings>::new(),
+        )
         .unwrap();
 
     println!("Training Done");
@@ -177,7 +181,7 @@ fn generate_poses(quantity: usize) -> Poses {
         let x_feet = rng.random_range(-5.1..5.1);
         let z_feet = rng.random_range(-5.1..5.1);
 
-        if !(x_feet > 3.0 && z_feet > 3.0) {
+        if !(x_feet > 4.3 && z_feet > 4.3) {
             poses.x_vec.push(x_feet);
             poses.z_vec.push(z_feet);
         }
