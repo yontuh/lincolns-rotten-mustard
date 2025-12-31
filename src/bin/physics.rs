@@ -1,5 +1,6 @@
 use bevy::app::ScheduleRunnerPlugin;
 use bevy::input::mouse::AccumulatedMouseMotion;
+use bevy::prelude::ops::sqrt;
 use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
 use ipc_channel::ipc::{self, IpcSender};
@@ -8,6 +9,7 @@ use shared::{Handshake, ModelChoices, Rewards};
 use std::env;
 use std::sync::Mutex;
 use std::time::Duration;
+
 use std::{
     f32::consts::{FRAC_PI_2, PI},
     ops::Range,
@@ -243,7 +245,15 @@ const BALL_RAD: f32 = ((5.0 / 12.0) / 2.0) * FTM;
 
 const BALL_WEIGHT: f32 = 0.165 * POUNDS_TO_KILOGRAMS;
 
-const GOAL_HEIGHT: f32 = 0.9845;
+const GOAL_HEIGHT: f32 = 98.45 / 100.0;
+
+const GOAL_X_AXIS_LENGTH: f32 = (21.0 / 12.0) * FTM;
+
+const GOAL_Z_AXIS_LENGTH: f32 = (21.0 / 12.0) * FTM;
+
+// Total height is 38.10, but it has this weird top piece
+
+const TRIANGLE_HEIGHT: f32 = 34.0 / 100.0;
 
 fn spawn_arena_objects(commands: &mut Commands, offset: Vec3) {
     let transform_input = Vec3::new(0.0, -0.001, 0.0) + offset;
@@ -283,76 +293,87 @@ fn spawn_arena_objects(commands: &mut Commands, offset: Vec3) {
         PhysicsObject,
     ));
 
-    let transform_input = Vec3::new(1.479, GOAL_HEIGHT / 2.0, 1.479) + offset;
+    // GOAL_X_AXIS
+    let transform_input = Vec3::new(
+        WALL_LENGTH / 2.0,
+        GOAL_HEIGHT / 2.0,
+        (WALL_LENGTH / 2.0) - (GOAL_Z_AXIS_LENGTH / 2.0),
+    ) + offset;
 
     commands.spawn((
-        Collider::cuboid(0.495, GOAL_HEIGHT / 2.0, 0.001),
+        Collider::cuboid(0.001, GOAL_HEIGHT / 2.0, GOAL_X_AXIS_LENGTH / 2.0),
+        Transform::from_xyz(transform_input.x, transform_input.y, transform_input.z),
+        PhysicsObject,
+    ));
+
+    // GOAL_DIAGONAL
+    let transform_input = Vec3::new(
+        -GOAL_X_AXIS_LENGTH / 2.0,
+        GOAL_HEIGHT / 2.0,
+        -GOAL_Z_AXIS_LENGTH / 2.0,
+    ) + Vec3::new(WALL_LENGTH / 2.0, 0.0, WALL_LENGTH / 2.0)
+        + offset;
+
+    commands.spawn((
+        Collider::cuboid(
+            sqrt((GOAL_X_AXIS_LENGTH / 2.0).powi(2) + (GOAL_Z_AXIS_LENGTH / 2.0).powi(2)),
+            GOAL_HEIGHT / 2.0,
+            0.001,
+        ),
         Transform::from_xyz(transform_input.x, transform_input.y, transform_input.z)
             .with_rotation(Quat::from_euler(EulerRot::YXZ, PI / 4.0, 0.0, 0.0)),
         PhysicsObject,
     ));
+
+    // GOAL_Z_AXIS
     let transform_input = Vec3::new(
-        (WALL_LENGTH / 2.0) - 0.35,
+        (WALL_LENGTH / 2.0) - (GOAL_Z_AXIS_LENGTH / 2.0),
         GOAL_HEIGHT / 2.0,
         WALL_LENGTH / 2.0,
     ) + offset;
     commands.spawn((
-        Collider::cuboid(0.35, GOAL_HEIGHT / 2.0, 0.001),
+        Collider::cuboid(GOAL_Z_AXIS_LENGTH / 2.0, GOAL_HEIGHT / 2.0, 0.001),
         Transform::from_xyz(transform_input.x, transform_input.y, transform_input.z),
         PhysicsObject,
     ));
 
-    let transform_input =
-        Vec3::new((WALL_LENGTH / 2.0) - 0.7, GOAL_HEIGHT, WALL_LENGTH / 2.0) + offset;
+    // TRIANGLE_X_AXIS
+    let transform_input = Vec3::new(WALL_LENGTH / 2.0, GOAL_HEIGHT, WALL_LENGTH / 2.0) + offset;
 
     commands.spawn((
         Collider::triangle(
-            Vec3::new(0.0, 0.0, 0.0) + offset,
-            Vec3::new(0.70, 0.0, 0.0) + offset,
-            Vec3::new(0.70, 0.375, 0.0) + offset,
-        ),
-        Transform::from_xyz(transform_input.x, transform_input.y, transform_input.z),
-        PhysicsObject,
-    ));
-
-    let transform_input = Vec3::new(
-        WALL_LENGTH / 2.0,
-        GOAL_HEIGHT / 2.0,
-        (WALL_LENGTH / 2.0) - 0.35,
-    ) + offset;
-
-    commands.spawn((
-        Collider::cuboid(0.001, GOAL_HEIGHT / 2.0, 0.35),
-        Transform::from_xyz(transform_input.x, transform_input.y, transform_input.z),
-        PhysicsObject,
-    ));
-
-    let transform_input =
-        Vec3::new(WALL_LENGTH / 2.0, GOAL_HEIGHT, (WALL_LENGTH / 2.0) - 0.7) + offset;
-
-    commands.spawn((
-        Collider::triangle(
+            Vec3::new(0.0, TRIANGLE_HEIGHT, 0.0),
+            Vec3::new(0.0, 0.0, -GOAL_X_AXIS_LENGTH),
             Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(0.0, 0.0, 0.70),
-            Vec3::new(0.0, 0.375, 0.70),
         ),
         Transform::from_xyz(transform_input.x, transform_input.y, transform_input.z),
         PhysicsObject,
     ));
 
-    let transform_input = Vec3::new(
-        WALL_LENGTH / 2.0,
-        GOAL_HEIGHT - 0.2,
-        (WALL_LENGTH / 2.0) - 0.7,
-    ) + offset;
+    // TRIANGLE_Z_AXIS
+    let transform_input = Vec3::new(WALL_LENGTH / 2.0, GOAL_HEIGHT, WALL_LENGTH / 2.0) + offset;
+
+    commands.spawn((
+        Collider::triangle(
+            Vec3::new(0.0, TRIANGLE_HEIGHT, 0.0) + offset,
+            Vec3::new(-GOAL_X_AXIS_LENGTH, 0.0, 0.0) + offset,
+            Vec3::new(0.0, 0.0, 0.0) + offset,
+        ),
+        Transform::from_xyz(transform_input.x, transform_input.y, transform_input.z),
+        PhysicsObject,
+    ));
+
+    // SENSOR
+    let transform_input =
+        Vec3::new(WALL_LENGTH / 2.0, GOAL_HEIGHT - 0.2, WALL_LENGTH / 2.0) + offset;
 
     commands.spawn((
         Sensor,
         ActiveEvents::COLLISION_EVENTS,
         Collider::triangle(
+            Vec3::new(-GOAL_X_AXIS_LENGTH, 0.0, 0.0),
             Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(0.0, 0.0, 0.7),
-            Vec3::new(-0.7, 0.0, 0.7),
+            Vec3::new(0.0, 0.0, -GOAL_Z_AXIS_LENGTH),
         ),
         Transform::from_xyz(transform_input.x, transform_input.y, transform_input.z),
         GoalObject,
