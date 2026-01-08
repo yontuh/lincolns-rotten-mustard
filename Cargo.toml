@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bevy = {version = "0.16.1", features = ["dynamic_linking", "wayland"]}
+bevy = {version = "0.16.1", features = ["wayland"]}
 bevy_rapier3d = { version = "0.31.0", features = ["simd-stable", "debug-render-3d", "parallel"]}
 iyes_perf_ui = "0.5.0"
 
@@ -15,7 +15,7 @@ ipc-channel = "0.20.2"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0"
 
-burn = { version = "0.19.1", default-features = false, features = ["std", "wgpu", "train"] }
+burn = { version = "0.19.1", default-features = false, features = ["std", "wgpu", "ndarray", "train"] }
 
 [profile.dev]
 opt-level = 0

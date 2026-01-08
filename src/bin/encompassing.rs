@@ -1,5 +1,5 @@
 use burn::{
-    backend::{wgpu::WgpuDevice, Wgpu},
+    backend::NdArray,
     prelude::*,
     record::{BinBytesRecorder, FullPrecisionSettings, Recorder},
 };
@@ -19,8 +19,10 @@ fn main() {
         args.get(2).expect("provide inputs"),
     );
 
-    type MyBackend = Wgpu;
-    let device = WgpuDevice::default();
+    type MyBackend = NdArray<f32>;
+    type BackendDevice = <MyBackend as burn::tensor::backend::Backend>::Device;
+
+    let device = BackendDevice::default();
 
     let config: AgentConfig =
         serde_json::from_str(CONFIG_JSON).expect("Failed to parse embedded config.json");

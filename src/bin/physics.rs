@@ -444,7 +444,7 @@ fn take_out(
         let forward_dir = final_rotation * Vec3::Z;
         let shoot_velocity = forward_dir * robot.snozzle_pow;
 
-        let spawn_pos = transform.translation + (Vec3::Y * ROBOT_HEIGHT);
+        let spawn_pos = transform.translation + (Vec3::Y * ROBOT_HEIGHT) + Vec3::new(1.0 * FTM,1.0 * FTM,1.0 * FTM);
 
         commands.spawn(BallBundle::new(spawn_pos, shoot_velocity, arena.0));
     }
