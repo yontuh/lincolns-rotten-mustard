@@ -19,8 +19,10 @@ const NUM_ARENAS: usize = 32;
 
 const ARENA_SPACING: f32 = 50.0;
 
+const MAX_FRAMES_TIMEOUT: usize = (15.0 * 60.0) as usize;
+
 fn main() {
-    let headless = false;
+    let headless = true;
 
     let mut app = App::new();
 
@@ -175,6 +177,16 @@ fn run_training_loop(
     // Track simulation
     } else {
         connection.shot_frame_counter += 1;
+
+        if connection.shot_frame_counter >= MAX_FRAMES_TIMEOUT {
+            let len = connection.collected_rewards.len();
+            for i in 0..len {
+                if connection.collected_rewards[i].is_none() {
+                    connection.collected_rewards[i] = Some(0.0);
+                    connection.finished_count += 1;
+                }
+            }
+        }
 
         let successes = check_success(
             &mut commands,
@@ -444,7 +456,9 @@ fn take_out(
         let forward_dir = final_rotation * Vec3::Z;
         let shoot_velocity = forward_dir * robot.snozzle_pow;
 
-        let spawn_pos = transform.translation + (Vec3::Y * ROBOT_HEIGHT) + Vec3::new(1.0 * FTM,1.0 * FTM,1.0 * FTM);
+        let spawn_pos = transform.translation
+            + (Vec3::Y * ROBOT_HEIGHT)
+            + Vec3::new(1.0 * FTM, 1.0 * FTM, 1.0 * FTM);
 
         commands.spawn(BallBundle::new(spawn_pos, shoot_velocity, arena.0));
     }
