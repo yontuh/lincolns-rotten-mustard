@@ -22,7 +22,7 @@ const ARENA_SPACING: f32 = 50.0;
 const MAX_FRAMES_TIMEOUT: usize = (15.0 * 60.0) as usize;
 
 fn main() {
-    let headless = true;
+    let headless = false;
 
     let mut app = App::new();
 
